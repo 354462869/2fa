@@ -105,6 +105,10 @@ function isRemoteConfig(value: unknown): value is RemoteConfig {
     && typeof value.deviceLabel === 'string';
 }
 
+function isClipboardImageItem(item: DataTransferItem): boolean {
+  return item.kind === 'file' && item.type.startsWith('image/');
+}
+
 function getPlatformBadge(issuer: string) {
   const name = issuer.toLowerCase().trim();
   const baseClass = "w-6 h-6 rounded-lg flex items-center justify-center text-xs font-bold shrink-0";
@@ -246,6 +250,8 @@ export default function App() {
   const dekRef = useRef<CryptoKey | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFileName, setSelectedFileName] = useState('');
+  const [qrPreviewSrc, setQrPreviewSrc] = useState('');
+  const [isScanningTab, setIsScanningTab] = useState(false);
   const syncInFlightRef = useRef(false);
 
   useEffect(() => {
@@ -573,40 +579,112 @@ export default function App() {
     }, 1500);
   };
 
-  const handleQrUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSelectedFileName(file.name);
+  const closeAddModal = () => {
+    setShowAddModal(false);
+    setQrPreviewSrc('');
+    setSelectedFileName('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const decodeQrFromImageSrc = (src: string, notFoundMessage: string) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        setErrorMessage('无法读取二维码图片');
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0);
+      const imgData = ctx.getImageData(0, 0, img.width, img.height);
+      const code = jsQR(imgData.data, imgData.width, imgData.height);
+      if (code && code.data) {
+        if (parseAndPopulateOtp(code.data)) {
+          setQrPreviewSrc(src);
+          setErrorMessage(null);
+        }
+      } else {
+        setErrorMessage(notFoundMessage);
+      }
+    };
+    img.onerror = () => setErrorMessage('二维码图片读取失败');
+    img.src = src;
+  };
+
+  const decodeQrFromFile = (file: File, sourceName: string) => {
+    setSelectedFileName(sourceName);
     const reader = new FileReader();
     reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0);
-          const imgData = ctx.getImageData(0, 0, img.width, img.height);
-          const code = jsQR(imgData.data, imgData.width, imgData.height);
-          if (code && code.data) {
-            parseAndPopulateOtp(code.data);
-          } else {
-            setErrorMessage('在图片中找不到有效的二维码');
-          }
-        }
-      };
-      img.src = event.target?.result as string;
+      const src = event.target?.result;
+      if (typeof src === 'string') {
+        decodeQrFromImageSrc(src, '在图片中找不到有效的二维码');
+      }
     };
+    reader.onerror = () => setErrorMessage('二维码图片读取失败');
     reader.readAsDataURL(file);
   };
 
-  const parseAndPopulateOtp = (url: string) => {
+  const handleQrUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    decodeQrFromFile(file, file.name);
+  };
+
+  const handleQrPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const imageItem = Array.from(e.clipboardData.items).find(isClipboardImageItem);
+    if (!imageItem) return;
+
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (!file) {
+      setErrorMessage('剪贴板中没有可读取的图片');
+      return;
+    }
+    decodeQrFromFile(file, '已粘贴截图');
+  };
+
+  const handleScanCurrentTab = () => {
+    setErrorMessage(null);
+    if (typeof chrome === 'undefined' || !chrome.tabs?.captureVisibleTab || !chrome.windows?.getCurrent) {
+      setErrorMessage('当前浏览器不支持标签页截图识别');
+      return;
+    }
+
+    setIsScanningTab(true);
+    chrome.windows.getCurrent((currentWindow) => {
+      const windowId = currentWindow.id;
+      if (typeof windowId !== 'number') {
+        setIsScanningTab(false);
+        setErrorMessage('无法确定当前浏览器窗口');
+        return;
+      }
+
+      chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, (dataUrl) => {
+        setIsScanningTab(false);
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          setErrorMessage(runtimeError.message || '无法截取当前标签页');
+          return;
+        }
+        if (!dataUrl) {
+          setErrorMessage('无法截取当前标签页');
+          return;
+        }
+        setSelectedFileName('当前标签页截图');
+        decodeQrFromImageSrc(dataUrl, '当前标签页可见区域中没有找到有效二维码');
+      });
+    });
+  };
+
+  const parseAndPopulateOtp = (url: string): boolean => {
     try {
       const parsed = new URL(url);
       if (parsed.protocol !== 'otpauth:' || parsed.host !== 'totp') {
         setErrorMessage('无效的 otpauth 链接');
-        return;
+        return false;
       }
       const pathname = decodeURIComponent(parsed.pathname.slice(1));
       let issuer = '';
@@ -626,8 +704,11 @@ export default function App() {
       setNewItemSecret(secret);
       setNewItemIssuer(issuer.trim());
       setNewItemAccount(account.trim());
+      setSuccessMessage('已识别二维码并填入账户信息');
+      return true;
     } catch {
       setErrorMessage('解析二维码失败');
+      return false;
     }
   };
 
@@ -673,6 +754,7 @@ export default function App() {
       setNewItemGroupId('');
       setNewItemNotes('');
       setSelectedFileName('');
+      setQrPreviewSrc('');
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err: unknown) {
       setErrorMessage(getErrorMessage(err, '保存失败'));
@@ -1182,6 +1264,7 @@ export default function App() {
                     setNewItemGroupId(selectedGroupId || '');
                     setNewItemNotes('');
                     setSelectedFileName('');
+                    setQrPreviewSrc('');
                     if (fileInputRef.current) fileInputRef.current.value = '';
                     setShowAddModal(true);
                   }}
@@ -1320,6 +1403,7 @@ export default function App() {
                                             setNewItemGroupId(item.group_id || '');
                                             setNewItemNotes(item.notes || '');
                                             setSelectedFileName('');
+                                            setQrPreviewSrc('');
                                             if (fileInputRef.current) fileInputRef.current.value = '';
                                             setShowAddModal(true);
                                           }}
@@ -1704,7 +1788,7 @@ export default function App() {
               </h3>
               <button
                 type="button"
-                onClick={() => setShowAddModal(false)}
+                onClick={closeAddModal}
                 className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 bg-slate-900/60 border border-slate-800/80 rounded-lg"
               >
                 关闭
@@ -1756,21 +1840,52 @@ export default function App() {
                 </div>
 
                 {!editingItem && (
-                  <div>
+                  <div onPaste={handleQrPaste}>
                     <label className="block text-[10px] font-semibold text-slate-400 mb-1">
-                      或上传二维码图片
+                      或识别二维码
                     </label>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="bg-slate-900 border border-slate-800 text-[10px] font-semibold text-indigo-400 hover:bg-slate-800 px-3 py-1.5 rounded-xl cursor-pointer"
-                      >
-                        选择二维码图片
-                      </button>
-                      <span className="text-[10px] text-slate-400 truncate max-w-[180px]">
-                        {selectedFileName || '未选择任何文件'}
+                    <div
+                      tabIndex={0}
+                      className="rounded-2xl border border-dashed border-slate-700/90 bg-slate-950/35 p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="bg-slate-900 border border-slate-800 text-[10px] font-semibold text-indigo-400 hover:bg-slate-800 px-3 py-1.5 rounded-xl cursor-pointer"
+                        >
+                          选择图片
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleScanCurrentTab}
+                          disabled={isScanningTab}
+                          className="bg-indigo-500/10 border border-indigo-500/30 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20 disabled:opacity-60 px-3 py-1.5 rounded-xl"
+                        >
+                          {isScanningTab ? '识别中...' : '识别当前页'}
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[10px] leading-4 text-slate-400">
+                        可在这里按 Ctrl+V 粘贴截图，或扫描当前标签页可见区域内的 2FA 二维码。
+                      </p>
+                      <span className="mt-1 block text-[10px] text-slate-500 truncate">
+                        {selectedFileName || '尚未导入二维码图片'}
                       </span>
+                      {qrPreviewSrc && (
+                        <div className="mt-3 flex items-center gap-3 rounded-xl border border-slate-800/80 bg-slate-900/45 p-2">
+                          <img
+                            src={qrPreviewSrc}
+                            alt="当前二维码预览"
+                            className="h-16 w-16 rounded-lg border border-slate-700/80 bg-white object-contain p-1"
+                          />
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-semibold text-slate-200">当前二维码预览</p>
+                            <p className="mt-1 text-[9px] leading-4 text-slate-500">
+                              已解析并填入账户信息，保存前可继续核对上方字段。
+                            </p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <input
                       ref={fileInputRef}
@@ -1817,7 +1932,7 @@ export default function App() {
               <div className="flex gap-3 pt-4 border-t border-slate-800/60 mt-6">
                 <button
                   type="button"
-                  onClick={() => setShowAddModal(false)}
+                  onClick={closeAddModal}
                   className="flex-1 bg-slate-900/60 border border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 py-2 rounded-xl text-xs font-medium focus:outline-none"
                 >
                   取消

@@ -27,7 +27,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v 2fa-data:/data \
   -e SERVER_ADDR=0.0.0.0:8080 \
   -e SERVER_DB_PATH=/data/2fa.sqlite \
-  ghcr.io/354462869/2fa-server:v0.1.0
+  ghcr.io/354462869/2fa-server:v0.1.1
 ```
 
 首次部署时，如果数据库为空，访问管理后台会提示创建第一个管理员账号。
