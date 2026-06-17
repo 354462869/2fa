@@ -71,7 +71,9 @@ jobs:
           context: .
           file: deploy/Dockerfile
           push: true
-          tags: ghcr.io/354462869/2fa-server:${{ env.RELEASE_TAG }}
+          tags: |
+            ghcr.io/354462869/2fa-server:${{ env.RELEASE_TAG }}
+            ghcr.io/354462869/2fa-server:latest
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
