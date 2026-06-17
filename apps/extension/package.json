@@ -1,0 +1,35 @@
+{
+  "name": "@2fa/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "Chromium MV3 extension for the 2FA self-host MVP.",
+  "scripts": {
+    "build": "vite build && vite build --config vite.background.config.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.background.json --noEmit",
+    "lint": "echo \"no lint configured\" && exit 0",
+    "format": "echo \"no formatter configured\" && exit 0"
+  },
+  "dependencies": {
+    "@2fa/api-client": "workspace:*",
+    "@2fa/api-types": "workspace:*",
+    "jsqr": "^1.4.0",
+    "lucide-react": "^0.400.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "typescript": "5.5.4",
+    "vite": "^5.3.3",
+    "vitest": "^2.1.9"
+  }
+}

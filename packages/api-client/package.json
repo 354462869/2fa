@@ -1,0 +1,30 @@
+{
+  "name": "@2fa/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"no tests\" && exit 0",
+    "lint": "echo \"no lint configured\" && exit 0",
+    "format": "echo \"no formatter configured\" && exit 0"
+  },
+  "dependencies": {
+    "@2fa/api-types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "5.5.4"
+  }
+}

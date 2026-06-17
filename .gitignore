@@ -1,0 +1,65 @@
+# ---- Editor / OS ----
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.playwright-mcp/
+.sisyphus/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# ---- Secrets / local env ----
+.env
+.env.*
+!.env.example
+
+# ---- Go ----
+/bin/
+/server
+/dist/
+/build/
+/release/
+/coverage/
+*.exe
+*.test
+*.out
+go.work
+go.work.sum
+
+# ---- Node / pnpm ----
+node_modules/
+.pnpm-store/
+.pnpm-debug.log
+.npm/
+.yarn/
+*.log
+*.tsbuildinfo
+
+# ---- Bundlers / frameworks ----
+**/dist/
+**/.cache/
+**/.turbo/
+**/.next/
+**/.nuxt/
+**/.output/
+**/.vite/
+**/.parcel-cache/
+
+# ---- Test / coverage ----
+coverage/
+*.lcov
+
+# ---- Local data / runtime ----
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-journal
+tmp/
+
+# ---- Generated artifacts kept out of VCS ----
+**/__generated__/

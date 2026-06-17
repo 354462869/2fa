@@ -1,0 +1,1093 @@
+openapi: 3.0.3
+info:
+  title: 2FA Sync API
+  version: 0.1.0-mvp
+  description: |
+    自托管、端到端加密的 TOTP 同步 API。
+
+    服务端认证账号并存储密文。
+    它从不接收同步密码，也无法解密用户数据。
+    请参阅 `docs/security.md` 和 `docs/sync-protocol.md`。
+  license:
+    name: AGPL-3.0-or-later
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: 本地开发环境
+
+tags:
+  - name: auth
+    description: 用户账号认证。
+  - name: devices
+    description: 用户的设备注册与吊销。
+  - name: sync
+    description: 加密密钥库的记录级乐观同步。
+  - name: admin
+    description: 管理员只读与吊销操作。
+  - name: meta
+    description: 服务端健康状态与版本信息。
+
+security:
+  - SessionAuth: []
+
+paths:
+
+  # ---------- Meta ----------
+
+  /v1/meta/health:
+    get:
+      tags: [meta]
+      summary: 存活探针。
+      security: []
+      responses:
+        '200':
+          description: 服务端正常运行。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /v1/meta/version:
+    get:
+      tags: [meta]
+      summary: 服务端版本与能力信息。
+      security: []
+      responses:
+        '200':
+          description: 版本元数据。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+
+  # ---------- Account auth ----------
+
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      summary: 注册新账号。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: 账号已创建。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 认证已有账号。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 会话已建立。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: 吊销当前会话。
+      responses:
+        '204':
+          description: 已注销。
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      summary: 返回已认证用户的身份信息。
+      responses:
+        '200':
+          description: 调用者身份。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserMe'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/auth/password:
+    put:
+      tags: [auth]
+      summary: 修改账号密码。
+      description: |
+        修改账号密码不会更改同步密码，
+        也不会重新加密密钥库。服务端仅更新其
+        密码哈希值。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeAccountPasswordRequest'
+      responses:
+        '204':
+          description: 密码已更新。
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  # ---------- Devices ----------
+
+  /v1/devices:
+    get:
+      tags: [devices]
+      summary: 列出调用者的设备。
+      responses:
+        '200':
+          description: 设备列表。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                additionalProperties: false
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+        '401':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [devices]
+      summary: 为调用者注册新设备。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterDeviceRequest'
+      responses:
+        '201':
+          description: 设备已注册。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    delete:
+      tags: [devices]
+      summary: 吊销调用者拥有的设备。
+      responses:
+        '204':
+          description: 设备已吊销。
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  # ---------- Sync ----------
+
+  /v1/sync/vault:
+    get:
+      tags: [sync]
+      summary: 获取已认证用户的密钥库元数据。
+      responses:
+        '200':
+          description: 密钥库元数据。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vault'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/sync/vault/envelope:
+    put:
+      tags: [sync]
+      summary: 替换密钥库信封（首次上传或同步密码变更）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutEnvelopeRequest'
+      responses:
+        '200':
+          description: 信封已更新。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vault'
+        '401':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: "`expected_rev` 过期。返回当前密钥库。"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vault'
+
+  /v1/sync/pull:
+    post:
+      tags: [sync]
+      summary: "拉取 `seq > since_seq` 的增量。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PullRequest'
+      responses:
+        '200':
+          description: 增量批次。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PullResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/sync/push:
+    post:
+      tags: [sync]
+      summary: 推送记录级变更，使用乐观并发控制。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushRequest'
+      responses:
+        '200':
+          description: 推送已处理；部分记录可能存在冲突。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/sync/items/{itemId}:
+    parameters:
+      - $ref: '#/components/parameters/ItemId'
+    get:
+      tags: [sync]
+      summary: 按 ID 获取单条项目记录。
+      responses:
+        '200':
+          description: 项目记录。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/sync/groups/{groupId}:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    get:
+      tags: [sync]
+      summary: 按 ID 获取单条分组记录。
+      responses:
+        '200':
+          description: 分组记录。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  # ---------- Admin ----------
+
+  /v1/admin/auth/login:
+    post:
+      tags: [admin]
+      summary: 管理员登录（独立于用户认证）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 管理员会话已建立。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/users:
+    get:
+      tags: [admin]
+      summary: 列出用户（仅非敏感元数据）。
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        '200':
+          description: 用户分页。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserPage'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [admin]
+      summary: 获取单个用户（仅非敏感元数据）。
+      responses:
+        '200':
+          description: 某用户的管理员视图。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/users/{userId}/disable:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [admin]
+      summary: 禁用用户（暂停同步；无法解密任何数据）。
+      responses:
+        '204':
+          description: 用户已禁用。
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/users/{userId}/enable:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [admin]
+      summary: 重新启用之前已禁用的用户。
+      responses:
+        '204':
+          description: 用户已启用。
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/users/{userId}/devices:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [admin]
+      summary: 列出某用户的已注册设备。
+      responses:
+        '200':
+          description: 设备列表，仅包含非敏感元数据。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/users/{userId}/devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/DeviceId'
+    delete:
+      tags: [admin]
+      summary: 吊销某用户的设备。
+      responses:
+        '204':
+          description: 设备已吊销。
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/audit:
+    get:
+      tags: [admin]
+      summary: 列出审计日志条目（不含密文，不含敏感内容）。
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        '200':
+          description: 审计分页。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '401':
+          $ref: '#/components/responses/Error'
+
+components:
+
+  securitySchemes:
+    SessionAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-session-token
+      description: |
+        由 `POST /v1/auth/login` 返回的不透明会话令牌。相同的
+        认证方案也用于 `/v1/admin/*` 路径的管理员会话；
+        服务端在内部执行基于角色的权限范围控制。
+
+  parameters:
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+    DeviceId:
+      in: path
+      name: deviceId
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+    ItemId:
+      in: path
+      name: itemId
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+    GroupId:
+      in: path
+      name: groupId
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+
+  responses:
+    Error:
+      description: 错误响应。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+  schemas:
+
+    # -------- Primitives --------
+
+    Id:
+      type: string
+      description: 客户端或服务端选择的不透明标识符（UUIDv7 或随机 128 位，base32/hex/ULID）。
+      minLength: 8
+      maxLength: 64
+      example: "01J0Q5K9M9V3SDZQ3K2T7R7B8H"
+
+    Base64:
+      type: string
+      description: Base64 编码的字节（RFC 4648，带填充）。
+      pattern: "^[A-Za-z0-9+/]+={0,2}$"
+
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 / ISO 8601 格式的 UTC 时间戳。
+
+    # -------- Errors --------
+
+    ApiError:
+      type: object
+      required: [code, message]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: 稳定的机器可读错误代码。
+          example: "auth.invalid_credentials"
+        message:
+          type: string
+          description: 人类可读、对最终用户安全的消息。
+        details:
+          type: object
+          additionalProperties: true
+          description: 可选的结构化详情。绝不包含密钥。
+
+    # -------- Meta --------
+
+    HealthResponse:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    VersionResponse:
+      type: object
+      required: [version, api]
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+          description: 服务端构建版本。
+          example: "0.1.0-mvp"
+        api:
+          type: string
+          description: API 契约版本。
+          example: "v1"
+        build:
+          type: string
+          description: 可选的构建元数据（提交、日期）。
+
+    # -------- Account auth --------
+
+    RegisterRequest:
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        password:
+          type: string
+          minLength: 12
+          maxLength: 256
+          description: 账号密码。并非同步密码。
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+        device_id:
+          $ref: '#/components/schemas/Id'
+          description: 可选的客户端选择设备 ID，用于绑定会话。
+
+    ChangeAccountPasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      additionalProperties: false
+      properties:
+        current_password:
+          type: string
+          minLength: 1
+          maxLength: 256
+        new_password:
+          type: string
+          minLength: 12
+          maxLength: 256
+
+    SessionResponse:
+      type: object
+      required: [token, user]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: "不透明会话令牌。以 `Authorization: Bearer <token>` 形式传回。"
+        user:
+          $ref: '#/components/schemas/UserMe'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    UserMe:
+      type: object
+      required: [id, username, role, created_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        username:
+          type: string
+        role:
+          type: string
+          enum: [user, admin]
+        disabled:
+          type: boolean
+          default: false
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    # -------- Devices --------
+
+    Device:
+      type: object
+      required: [id, label, created_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        label:
+          type: string
+          description: 用户选择的人类可读设备标签。
+          maxLength: 100
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        last_seen_at:
+          $ref: '#/components/schemas/Timestamp'
+        revoked:
+          type: boolean
+          default: false
+
+    RegisterDeviceRequest:
+      type: object
+      required: [id, label]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        label:
+          type: string
+          maxLength: 100
+
+    # -------- Crypto envelopes --------
+
+    KdfParams:
+      type: object
+      description: |
+        密码 KDF 的算法特定参数。
+        服务端以不透明方式存储。
+      additionalProperties: true
+
+    VaultEnvelope:
+      type: object
+      required: [alg, kdf, kdf_salt_b64, wrapped_dek_b64, wrap_iv_b64]
+      additionalProperties: false
+      properties:
+        alg:
+          type: string
+          description: 用于包裹 DEK 的 AEAD 算法。
+          example: "A256GCM"
+        kdf:
+          type: string
+          description: 用于从同步密码派生包裹密钥的 KDF 算法。
+          example: "argon2id"
+        kdf_params:
+          $ref: '#/components/schemas/KdfParams'
+        kdf_salt_b64:
+          $ref: '#/components/schemas/Base64'
+        wrapped_dek_b64:
+          $ref: '#/components/schemas/Base64'
+        wrap_iv_b64:
+          $ref: '#/components/schemas/Base64'
+
+    RecordCipher:
+      type: object
+      required: [alg, iv_b64, ct_b64]
+      additionalProperties: false
+      properties:
+        alg:
+          type: string
+          example: "A256GCM"
+        iv_b64:
+          $ref: '#/components/schemas/Base64'
+        ct_b64:
+          $ref: '#/components/schemas/Base64'
+        aad_b64:
+          $ref: '#/components/schemas/Base64'
+          description: 可选的附加认证数据，base64 编码。
+
+    # -------- Vault & sync --------
+
+    Vault:
+      type: object
+      required: [user_id, seq, envelope_rev, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        user_id:
+          $ref: '#/components/schemas/Id'
+        seq:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 该用户当前的单调同步计数器。
+        envelope_rev:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 信封记录的乐观并发令牌。
+        envelope:
+          $ref: '#/components/schemas/VaultEnvelope'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    PutEnvelopeRequest:
+      type: object
+      required: [envelope, expected_rev]
+      additionalProperties: false
+      properties:
+        envelope:
+          $ref: '#/components/schemas/VaultEnvelope'
+        expected_rev:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: 使用 0 / null 表示"尚无信封"。
+
+    # -------- Records --------
+
+    Item:
+      type: object
+      required: [id, rev, seq, deleted, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        group_id:
+          $ref: '#/components/schemas/Id'
+          nullable: true
+        rev:
+          type: integer
+          format: int64
+          minimum: 1
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+        deleted:
+          type: boolean
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+        ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+          description: 当 `deleted` 为 true 时为 null。
+
+    Group:
+      type: object
+      required: [id, rev, seq, deleted, sort_index, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        rev:
+          type: integer
+          format: int64
+          minimum: 1
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+        deleted:
+          type: boolean
+        sort_index:
+          type: integer
+          format: int64
+          description: 明文排序提示。
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+        ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+          description: 当 `deleted` 为 true 时为 null。
+
+    # -------- Sync push/pull --------
+
+    PullRequest:
+      type: object
+      required: [since_seq]
+      additionalProperties: false
+      properties:
+        since_seq:
+          type: integer
+          format: int64
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 500
+
+    PullResponse:
+      type: object
+      required: [items, groups, next_seq, has_more]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        next_seq:
+          type: integer
+          format: int64
+          minimum: 0
+        has_more:
+          type: boolean
+
+    PushItem:
+      type: object
+      required: [id, deleted, expected_rev]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        group_id:
+          $ref: '#/components/schemas/Id'
+          nullable: true
+        deleted:
+          type: boolean
+        expected_rev:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Null 表示仅创建。否则必须匹配服务端 rev。
+        ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+          description: 当 `deleted` 为 false 时必填。
+
+    PushGroup:
+      type: object
+      required: [id, deleted, sort_index, expected_rev]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        deleted:
+          type: boolean
+        sort_index:
+          type: integer
+          format: int64
+        expected_rev:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+
+    PushRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PushItem'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/PushGroup'
+
+    AppliedRecord:
+      type: object
+      required: [id, kind, rev, seq]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        kind:
+          type: string
+          enum: [item, group]
+        rev:
+          type: integer
+          format: int64
+          minimum: 1
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+
+    ConflictRecord:
+      type: object
+      required: [id, kind, current_rev, current_seq]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        kind:
+          type: string
+          enum: [item, group]
+        current_rev:
+          type: integer
+          format: int64
+          minimum: 1
+        current_seq:
+          type: integer
+          format: int64
+          minimum: 1
+        current_item:
+          $ref: '#/components/schemas/Item'
+          nullable: true
+        current_group:
+          $ref: '#/components/schemas/Group'
+          nullable: true
+
+    PushResponse:
+      type: object
+      required: [applied, conflicts, next_seq]
+      additionalProperties: false
+      properties:
+        applied:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedRecord'
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConflictRecord'
+        next_seq:
+          type: integer
+          format: int64
+          minimum: 0
+
+    # -------- Admin --------
+
+    AdminUser:
+      type: object
+      required: [id, username, role, disabled, device_count, created_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        username:
+          type: string
+        role:
+          type: string
+          enum: [user, admin]
+        disabled:
+          type: boolean
+        device_count:
+          type: integer
+          minimum: 0
+        last_sync_at:
+          $ref: '#/components/schemas/Timestamp'
+        ciphertext_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 该用户使用的密文存储总量，用于容量规划。
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    AdminUserPage:
+      type: object
+      required: [users]
+      additionalProperties: false
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUser'
+        next_cursor:
+          type: string
+          nullable: true
+
+    AuditEntry:
+      type: object
+      required: [id, at, actor_kind, action]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        actor_kind:
+          type: string
+          enum: [user, admin, system]
+        actor_id:
+          $ref: '#/components/schemas/Id'
+          nullable: true
+        action:
+          type: string
+          description: 稳定的机器可读操作代码。
+          example: "admin.user.disable"
+        target_kind:
+          type: string
+          nullable: true
+        target_id:
+          $ref: '#/components/schemas/Id'
+          nullable: true
+        ip:
+          type: string
+          nullable: true
+        user_agent:
+          type: string
+          nullable: true
+
+    AuditPage:
+      type: object
+      required: [entries]
+      additionalProperties: false
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+        next_cursor:
+          type: string
+          nullable: true
