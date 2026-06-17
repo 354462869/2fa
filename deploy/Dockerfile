@@ -5,7 +5,7 @@ FROM node:20-alpine AS admin-builder
 WORKDIR /src
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/admin/package.json ./apps/admin/package.json
 COPY packages/api-client/package.json ./packages/api-client/package.json
 COPY packages/api-types/package.json ./packages/api-types/package.json

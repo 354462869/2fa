@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "2FA 验证器",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "安全、可自托管、离线优先且支持端到端加密的 2FA 管理器。",
   "permissions": [
     "storage",

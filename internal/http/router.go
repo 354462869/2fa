@@ -20,7 +20,7 @@ import (
 
 const (
 	apiVersion    = "v1"
-	serverVersion = "0.1.2"
+	serverVersion = "0.1.3"
 )
 
 type RouterDeps struct {
