@@ -2,9 +2,15 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/daling/2fa/internal/auth"
 	"github.com/daling/2fa/internal/config"
@@ -74,8 +80,56 @@ func NewRouter(deps RouterDeps) http.Handler {
 			mux.HandleFunc(p, handleNotImplemented)
 		}
 	}
+	if deps.Config.AdminAssetsDir != "" {
+		mux.Handle("GET /", adminAssetsHandler(deps.Config.AdminAssetsDir))
+	}
 
 	return withRequestLogging(deps.Logger, withCORS(deps.Config, withSecretNameGuard(mux)))
+}
+
+func adminAssetsHandler(dir string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
+		if path == "." {
+			path = "index.html"
+		}
+		if strings.HasPrefix(path, "..") {
+			serveAdminFile(w, r, filepath.Join(dir, "index.html"))
+			return
+		}
+
+		fullPath := filepath.Join(dir, path)
+		info, err := os.Stat(fullPath)
+		if err != nil || info.IsDir() {
+			serveAdminFile(w, r, filepath.Join(dir, "index.html"))
+			return
+		}
+		serveAdminFile(w, r, fullPath)
+	})
+}
+
+func serveAdminFile(w http.ResponseWriter, r *http.Request, path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	if ctype := mime.TypeByExtension(filepath.Ext(path)); ctype != "" {
+		w.Header().Set("Content-Type", ctype)
+	}
+	contents, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	http.ServeContent(w, r, info.Name(), info.ModTime(), bytes.NewReader(contents))
 }
 
 var businessRoutes = []string{

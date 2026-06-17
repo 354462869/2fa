@@ -30,7 +30,7 @@ function getErrorMessage(err: unknown, fallback: string): string {
 }
 
 export default function App() {
-  const [baseUrl, setBaseUrl] = useState(() => sessionStorage.getItem('admin_base_url') || 'http://127.0.0.1:8080');
+  const [baseUrl, setBaseUrl] = useState(() => sessionStorage.getItem('admin_base_url') || window.location.origin);
   const [token, setToken] = useState(() => sessionStorage.getItem('admin_token') || '');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');

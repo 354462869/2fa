@@ -39,8 +39,16 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build shared packages
+        run: |
+          pnpm --filter @2fa/api-types build
+          pnpm --filter @2fa/api-client build
+
       - name: Build extension
         run: pnpm --filter @2fa/extension build
+
+      - name: Build admin
+        run: pnpm --filter @2fa/admin build
 
       - name: Package extension
         run: |

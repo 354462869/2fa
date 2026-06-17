@@ -18,6 +18,7 @@ type Config struct {
 	Env          string
 	DBPath       string
 	PublicOrigin string
+	AdminAssetsDir string
 
 	SessionSecret string
 	SessionTTL    time.Duration
@@ -37,6 +38,7 @@ func Load() (Config, error) {
 		Env:                 getString("SERVER_ENV", "development"),
 		DBPath:              getString("SERVER_DB_PATH", "./data/2fa.sqlite"),
 		PublicOrigin:        getString("SERVER_PUBLIC_ORIGIN", "http://127.0.0.1:8080"),
+		AdminAssetsDir:      os.Getenv("SERVER_ADMIN_ASSETS_DIR"),
 		SessionSecret:       os.Getenv("SERVER_SESSION_SECRET"),
 		AllowedOrigins:      splitCSV(getString("SERVER_ALLOWED_ORIGINS", "")),
 		RateLimitAuthPerMin: getInt("SERVER_RATE_LIMIT_AUTH_PER_MIN", 20),
