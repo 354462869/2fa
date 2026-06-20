@@ -60,6 +60,15 @@ jobs:
           git archive --format=tar.gz --prefix="2fa-${RELEASE_TAG}/" \
             -o "${GITHUB_WORKSPACE}/2fa-source-${RELEASE_TAG}.tar.gz" "${RELEASE_TAG}"
 
+      - name: Extract release notes
+        run: |
+          awk -v tag="${RELEASE_TAG}" '
+            $0 == "# " tag { emit = 1; next }
+            emit && /^# v[0-9]+\.[0-9]+\.[0-9]+/ { exit }
+            emit { print }
+          ' RELEASE_NOTES.md > "${GITHUB_WORKSPACE}/release-notes-${RELEASE_TAG}.md"
+          test -s "${GITHUB_WORKSPACE}/release-notes-${RELEASE_TAG}.md"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -84,6 +93,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          body_path: release-notes-${{ env.RELEASE_TAG }}.md
           files: |
             2fa-extension-${{ env.RELEASE_TAG }}.zip
             2fa-source-${{ env.RELEASE_TAG }}.tar.gz
