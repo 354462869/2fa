@@ -1,12 +1,12 @@
 {
   "name": "@2fa/extension",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "Chromium MV3 extension for the 2FA self-host MVP.",
+  "description": "Chromium MV3 extension for Account Manager.",
   "scripts": {
-    "build": "vite build && vite build --config vite.background.config.ts",
+    "build": "vite build && vite build --config vite.background.config.ts && vite build --config vite.content.config.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.background.json --noEmit",
     "lint": "echo \"no lint configured\" && exit 0",

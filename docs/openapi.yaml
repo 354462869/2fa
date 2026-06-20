@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
-  title: 2FA Sync API
-  version: 0.1.3
+  title: Account Manager Sync API
+  version: 0.2.0
   description: |
-    自托管、端到端加密的 TOTP 同步 API。
+    Account Manager 的自托管同步 API，支持端到端加密的 TOTP/2FA 和账号资料管理。
 
     服务端认证账号并存储密文。
     它从不接收同步密码，也无法解密用户数据。
@@ -330,6 +330,42 @@ paths:
         '404':
           $ref: '#/components/responses/Error'
 
+  /v1/sync/accounts/{accountId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags: [sync]
+      summary: 按 ID 获取单条账户元数据和加密密文记录。
+      responses:
+        '200':
+          description: 账户记录。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/sync/relations/{relationId}:
+    parameters:
+      - $ref: '#/components/parameters/RelationId'
+    get:
+      tags: [sync]
+      summary: 按 ID 获取单条关系记录。
+      responses:
+        '200':
+          description: 关系记录。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relation'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
   # ---------- Admin ----------
 
   /v1/admin/auth/login:
@@ -444,6 +480,42 @@ paths:
         '404':
           $ref: '#/components/responses/Error'
 
+  /v1/admin/users/{userId}/accounts:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [admin]
+      summary: 列出某用户的账户元数据，不返回 secret_ciphertext。
+      responses:
+        '200':
+          description: 账户元数据列表，不含密文。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAccountPage'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/users/{userId}/relations:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [admin]
+      summary: 列出某用户的关系元数据，不返回 secret_ciphertext。
+      responses:
+        '200':
+          description: 关系元数据列表，不含密文。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRelationPage'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
   /v1/admin/users/{userId}/devices/{deviceId}:
     parameters:
       - $ref: '#/components/parameters/UserId'
@@ -517,6 +589,18 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/Id'
+    AccountId:
+      in: path
+      name: accountId
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+    RelationId:
+      in: path
+      name: relationId
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
 
   responses:
     Error:
@@ -585,7 +669,7 @@ components:
         version:
           type: string
           description: 服务端构建版本。
-          example: "0.1.3"
+          example: "0.2.0"
         api:
           type: string
           description: API 契约版本。
@@ -849,6 +933,109 @@ components:
           nullable: true
           description: 当 `deleted` 为 true 时为 null。
 
+    Account:
+      type: object
+      required: [id, rev, seq, deleted, kind, platform, display_name, status, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        rev:
+          type: integer
+          format: int64
+          minimum: 1
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+        deleted:
+          type: boolean
+        kind:
+          type: string
+          description: 账户类型，例如 login、totp、proxy_profile。
+        platform:
+          type: string
+          description: 平台或服务名。
+        display_name:
+          type: string
+          description: 管理端可见的脱敏显示名称。
+        login_identifier:
+          type: string
+          nullable: true
+          description: 脱敏后的登录标识；不得包含完整手机号、完整邮箱或敏感令牌。
+        login_identifier_hash:
+          type: string
+          nullable: true
+          description: 客户端计算的登录标识哈希，用于去重/关联。
+        status:
+          type: string
+        tags_json:
+          description: JSON 标签数组或对象，仅限非敏感元数据。
+          nullable: true
+        metadata_json:
+          description: JSON 元数据，仅限非敏感字段。
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+        secret_ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+          description: 包含密码、TOTP、恢复码、token、cookie、代理认证等敏感内容的加密密文；管理员接口永不返回。
+
+    Relation:
+      type: object
+      required: [id, rev, seq, deleted, kind, from_kind, from_id, to_kind, to_id, relation_type, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        rev:
+          type: integer
+          format: int64
+          minimum: 1
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+        deleted:
+          type: boolean
+        kind:
+          type: string
+        from_kind:
+          type: string
+        from_id:
+          $ref: '#/components/schemas/Id'
+        to_kind:
+          type: string
+        to_id:
+          $ref: '#/components/schemas/Id'
+        relation_type:
+          type: string
+          description: 与 `kind` 等价的设计文档别名。服务端始终回填，方便按账号关系视角阅读。
+        from_account_id:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          nullable: true
+          description: 当 `from_kind == "account"` 时等于 `from_id`；其他情况下为空，避免误把非账号端点当账号引用。
+        to_account_id:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          nullable: true
+          description: 当 `to_kind == "account"` 时等于 `to_id`；其他情况下为空。
+        metadata_json:
+          description: JSON 元数据，仅限非敏感字段。
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+        secret_ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+          description: 关系相关敏感内容的加密密文；管理员接口永不返回。
+
     # -------- Sync push/pull --------
 
     PullRequest:
@@ -879,6 +1066,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Group'
+        accounts:
+          type: array
+          description: 账号元数据增量。旧客户端可忽略；未启用账号投影时可能省略。
+          items:
+            $ref: '#/components/schemas/Account'
+        relations:
+          type: array
+          description: 账号关系元数据增量。旧客户端可忽略；未启用关系投影时可能省略。
+          items:
+            $ref: '#/components/schemas/Relation'
         next_seq:
           type: integer
           format: int64
@@ -930,6 +1127,91 @@ components:
           $ref: '#/components/schemas/RecordCipher'
           nullable: true
 
+    PushAccount:
+      type: object
+      required: [id, deleted, kind, platform, display_name, status, expected_rev]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        deleted:
+          type: boolean
+        kind:
+          type: string
+        platform:
+          type: string
+        display_name:
+          type: string
+        login_identifier:
+          type: string
+          nullable: true
+          description: 脱敏后的登录标识。
+        login_identifier_hash:
+          type: string
+          nullable: true
+        status:
+          type: string
+        tags_json:
+          nullable: true
+        metadata_json:
+          nullable: true
+        expected_rev:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        secret_ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+          description: 当 `deleted` 为 false 时必填。
+
+    PushRelation:
+      type: object
+      required: [id, deleted, expected_rev]
+      additionalProperties: false
+      description: |
+        关系推送对象。两套字段集二选一即可，二者都提供时以 `kind`/`from_kind`/`from_id`/`to_kind`/`to_id` 为准：
+
+        - 通用模型：`kind` + `from_kind`/`from_id` + `to_kind`/`to_id`。
+        - 账号视图（设计文档别名）：`relation_type` + `from_account_id` + `to_account_id`，服务端将 `from_kind`/`to_kind` 视为 `account`。
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        deleted:
+          type: boolean
+        kind:
+          type: string
+        from_kind:
+          type: string
+        from_id:
+          $ref: '#/components/schemas/Id'
+        to_kind:
+          type: string
+        to_id:
+          $ref: '#/components/schemas/Id'
+        relation_type:
+          type: string
+          description: 与 `kind` 等价的别名；当 `kind` 为空时使用。
+        from_account_id:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          description: 当 `from_id` 为空时使用；服务端将 `from_kind` 默认为 `account`。
+        to_account_id:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          description: 当 `to_id` 为空时使用；服务端将 `to_kind` 默认为 `account`。
+        metadata_json:
+          nullable: true
+        expected_rev:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        secret_ciphertext:
+          $ref: '#/components/schemas/RecordCipher'
+          nullable: true
+          description: 当 `deleted` 为 false 时必填。
+
     PushRequest:
       type: object
       additionalProperties: false
@@ -942,6 +1224,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PushGroup'
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PushAccount'
+        relations:
+          type: array
+          items:
+            $ref: '#/components/schemas/PushRelation'
 
     AppliedRecord:
       type: object
@@ -952,7 +1242,7 @@ components:
           $ref: '#/components/schemas/Id'
         kind:
           type: string
-          enum: [item, group]
+          enum: [item, group, account, relation]
         rev:
           type: integer
           format: int64
@@ -971,7 +1261,7 @@ components:
           $ref: '#/components/schemas/Id'
         kind:
           type: string
-          enum: [item, group]
+          enum: [item, group, account, relation]
         current_rev:
           type: integer
           format: int64
@@ -985,6 +1275,12 @@ components:
           nullable: true
         current_group:
           $ref: '#/components/schemas/Group'
+          nullable: true
+        current_account:
+          $ref: '#/components/schemas/Account'
+          nullable: true
+        current_relation:
+          $ref: '#/components/schemas/Relation'
           nullable: true
 
     PushResponse:
@@ -1046,6 +1342,94 @@ components:
         next_cursor:
           type: string
           nullable: true
+
+    AdminAccount:
+      type: object
+      required: [id, rev, seq, deleted, kind, platform, display_name, status, created_at, updated_at]
+      additionalProperties: false
+      description: 管理员账户元数据视图；不包含 secret_ciphertext。
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        rev: { type: integer, format: int64, minimum: 1 }
+        seq: { type: integer, format: int64, minimum: 1 }
+        deleted: { type: boolean }
+        kind: { type: string }
+        platform: { type: string }
+        display_name: { type: string }
+        login_identifier:
+          type: string
+          nullable: true
+        login_identifier_hash:
+          type: string
+          nullable: true
+        status: { type: string }
+        tags_json:
+          nullable: true
+        metadata_json:
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    AdminRelation:
+      type: object
+      required: [id, rev, seq, deleted, kind, from_kind, from_id, to_kind, to_id, relation_type, created_at, updated_at]
+      additionalProperties: false
+      description: 管理员关系元数据视图；不包含 secret_ciphertext。
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        rev: { type: integer, format: int64, minimum: 1 }
+        seq: { type: integer, format: int64, minimum: 1 }
+        deleted: { type: boolean }
+        kind: { type: string }
+        from_kind: { type: string }
+        from_id:
+          $ref: '#/components/schemas/Id'
+        to_kind: { type: string }
+        to_id:
+          $ref: '#/components/schemas/Id'
+        relation_type:
+          type: string
+          description: 与 `kind` 等价的设计文档别名。
+        from_account_id:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          nullable: true
+          description: 仅当 `from_kind == "account"` 时存在。
+        to_account_id:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          nullable: true
+          description: 仅当 `to_kind == "account"` 时存在。
+        metadata_json:
+          nullable: true
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    AdminAccountPage:
+      type: object
+      required: [accounts]
+      additionalProperties: false
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminAccount'
+
+    AdminRelationPage:
+      type: object
+      required: [relations]
+      additionalProperties: false
+      properties:
+        relations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRelation'
 
     AuditEntry:
       type: object

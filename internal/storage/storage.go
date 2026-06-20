@@ -44,10 +44,14 @@ type Store interface {
 
 	GetItem(ctx context.Context, userID, itemID string) (*Item, error)
 	GetGroup(ctx context.Context, userID, groupID string) (*Group, error)
+	GetAccount(ctx context.Context, userID, accountID string) (*Account, error)
+	GetRelation(ctx context.Context, userID, relationID string) (*Relation, error)
+	ListAccountsByUser(ctx context.Context, userID string) ([]*Account, error)
+	ListRelationsByUser(ctx context.Context, userID string) ([]*Relation, error)
 
-	PullRecords(ctx context.Context, userID string, sinceSeq int64, limit int) ([]*Item, []*Group, int64, bool, error)
+	PullRecords(ctx context.Context, userID string, sinceSeq int64, limit int) ([]*Item, []*Group, []*Account, []*Relation, int64, bool, error)
 
-	PushRecords(ctx context.Context, userID string, items []PushItemInput, groups []PushGroupInput) ([]AppliedResult, []ConflictResult, int64, error)
+	PushRecords(ctx context.Context, userID string, items []PushItemInput, groups []PushGroupInput, accounts []PushAccountInput, relations []PushRelationInput) ([]AppliedResult, []ConflictResult, int64, error)
 
 	CreateAuditEntry(ctx context.Context, entry *AuditEntry) error
 	ListAuditEntries(ctx context.Context, limit int, cursor string) ([]*AuditEntry, string, error)

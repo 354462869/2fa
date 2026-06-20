@@ -1,6 +1,6 @@
 # 部署配置
 
-本目录包含 2FA 自托管 MVP 的单容器部署配置。镜像内同时包含 Go 同步 API、SQLite 存储和管理后台 SPA。
+本目录包含账号管理器（Account Manager）的单容器部署配置。镜像内同时包含 Go 同步 API、SQLite 存储和管理后台 SPA。
 
 目录内容：
 
@@ -25,7 +25,7 @@ docker run --rm -p 8080:8080 \
   -e SERVER_DB_PATH=/data/2fa.sqlite \
   -e SERVER_PUBLIC_ORIGIN=http://127.0.0.1:8080 \
   -e SERVER_ALLOWED_ORIGINS=http://127.0.0.1:8080 \
-  ghcr.io/354462869/2fa-server:v0.1.3
+  ghcr.io/354462869/2fa-server:v0.2.0
 ```
 
 首次部署时，如果数据库为空，访问 `http://127.0.0.1:8080` 会进入管理后台并提示创建第一个管理员账号。

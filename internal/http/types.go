@@ -1,6 +1,11 @@
 package http
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+type jsonRaw = json.RawMessage
 
 type RegisterRequest struct {
 	Username string `json:"username"`
@@ -99,16 +104,59 @@ type GroupResponse struct {
 	Ciphertext *RecordCipher `json:"ciphertext,omitempty"`
 }
 
+type AccountResponse struct {
+	ID                  string        `json:"id"`
+	Rev                 int64         `json:"rev"`
+	Seq                 int64         `json:"seq"`
+	Deleted             bool          `json:"deleted"`
+	Kind                string        `json:"kind"`
+	Platform            string        `json:"platform"`
+	DisplayName         string        `json:"display_name"`
+	LoginIdentifier     *string       `json:"login_identifier,omitempty"`
+	LoginIdentifierHash *string       `json:"login_identifier_hash,omitempty"`
+	Status              string        `json:"status"`
+	TagsJSON            jsonRaw       `json:"tags_json,omitempty"`
+	MetadataJSON        jsonRaw       `json:"metadata_json,omitempty"`
+	CreatedAt           time.Time     `json:"created_at"`
+	UpdatedAt           time.Time     `json:"updated_at"`
+	SecretCiphertext    *RecordCipher `json:"secret_ciphertext,omitempty"`
+}
+
+type RelationResponse struct {
+	ID       string `json:"id"`
+	Rev      int64  `json:"rev"`
+	Seq      int64  `json:"seq"`
+	Deleted  bool   `json:"deleted"`
+	Kind     string `json:"kind"`
+	FromKind string `json:"from_kind"`
+	FromID   string `json:"from_id"`
+	ToKind   string `json:"to_kind"`
+	ToID     string `json:"to_id"`
+	// Design-aligned compatibility aliases. RelationType mirrors Kind. The
+	// account-scoped aliases are populated only when FromKind / ToKind is
+	// "account", so consumers can rely on them for account-to-account graphs
+	// without losing the generic kind/from/to model.
+	RelationType     string        `json:"relation_type"`
+	FromAccountID    *string       `json:"from_account_id,omitempty"`
+	ToAccountID      *string       `json:"to_account_id,omitempty"`
+	MetadataJSON     jsonRaw       `json:"metadata_json,omitempty"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	SecretCiphertext *RecordCipher `json:"secret_ciphertext,omitempty"`
+}
+
 type PullRequest struct {
 	SinceSeq int64 `json:"since_seq"`
 	Limit    int   `json:"limit"`
 }
 
 type PullResponse struct {
-	Items   []ItemResponse  `json:"items"`
-	Groups  []GroupResponse `json:"groups"`
-	NextSeq int64           `json:"next_seq"`
-	HasMore bool            `json:"has_more"`
+	Items     []ItemResponse     `json:"items"`
+	Groups    []GroupResponse    `json:"groups"`
+	Accounts  []AccountResponse  `json:"accounts"`
+	Relations []RelationResponse `json:"relations"`
+	NextSeq   int64              `json:"next_seq"`
+	HasMore   bool               `json:"has_more"`
 }
 
 type PushItemInput struct {
@@ -127,9 +175,46 @@ type PushGroupInput struct {
 	Ciphertext  *RecordCipher `json:"ciphertext,omitempty"`
 }
 
+type PushAccountInput struct {
+	ID                  string        `json:"id"`
+	Deleted             bool          `json:"deleted"`
+	Kind                string        `json:"kind"`
+	Platform            string        `json:"platform"`
+	DisplayName         string        `json:"display_name"`
+	LoginIdentifier     *string       `json:"login_identifier,omitempty"`
+	LoginIdentifierHash *string       `json:"login_identifier_hash,omitempty"`
+	Status              string        `json:"status"`
+	TagsJSON            jsonRaw       `json:"tags_json,omitempty"`
+	MetadataJSON        jsonRaw       `json:"metadata_json,omitempty"`
+	ExpectedRev         *int64        `json:"expected_rev"`
+	SecretCiphertext    *RecordCipher `json:"secret_ciphertext,omitempty"`
+}
+
+type PushRelationInput struct {
+	ID       string `json:"id"`
+	Deleted  bool   `json:"deleted"`
+	Kind     string `json:"kind,omitempty"`
+	FromKind string `json:"from_kind,omitempty"`
+	FromID   string `json:"from_id,omitempty"`
+	ToKind   string `json:"to_kind,omitempty"`
+	ToID     string `json:"to_id,omitempty"`
+	// Design-aligned aliases. When kind/from_id/to_id are absent the server
+	// derives them from relation_type/from_account_id/to_account_id and treats
+	// the endpoints as accounts. Callers may also send both sets; the generic
+	// fields take precedence when populated.
+	RelationType     string        `json:"relation_type,omitempty"`
+	FromAccountID    string        `json:"from_account_id,omitempty"`
+	ToAccountID      string        `json:"to_account_id,omitempty"`
+	MetadataJSON     jsonRaw       `json:"metadata_json,omitempty"`
+	ExpectedRev      *int64        `json:"expected_rev"`
+	SecretCiphertext *RecordCipher `json:"secret_ciphertext,omitempty"`
+}
+
 type PushRequest struct {
-	Items  []PushItemInput  `json:"items,omitempty"`
-	Groups []PushGroupInput `json:"groups,omitempty"`
+	Items     []PushItemInput     `json:"items,omitempty"`
+	Groups    []PushGroupInput    `json:"groups,omitempty"`
+	Accounts  []PushAccountInput  `json:"accounts,omitempty"`
+	Relations []PushRelationInput `json:"relations,omitempty"`
 }
 
 type AppliedRecord struct {
@@ -140,12 +225,14 @@ type AppliedRecord struct {
 }
 
 type ConflictRecord struct {
-	ID           string         `json:"id"`
-	Kind         string         `json:"kind"`
-	CurrentRev   int64          `json:"current_rev"`
-	CurrentSeq   int64          `json:"current_seq"`
-	CurrentItem  *ItemResponse  `json:"current_item,omitempty"`
-	CurrentGroup *GroupResponse `json:"current_group,omitempty"`
+	ID              string            `json:"id"`
+	Kind            string            `json:"kind"`
+	CurrentRev      int64             `json:"current_rev"`
+	CurrentSeq      int64             `json:"current_seq"`
+	CurrentItem     *ItemResponse     `json:"current_item,omitempty"`
+	CurrentGroup    *GroupResponse    `json:"current_group,omitempty"`
+	CurrentAccount  *AccountResponse  `json:"current_account,omitempty"`
+	CurrentRelation *RelationResponse `json:"current_relation,omitempty"`
 }
 
 type PushResponse struct {
@@ -168,6 +255,49 @@ type AdminUser struct {
 type AdminUserPage struct {
 	Users      []AdminUser `json:"users"`
 	NextCursor *string     `json:"next_cursor,omitempty"`
+}
+
+type AdminAccount struct {
+	ID                  string    `json:"id"`
+	Rev                 int64     `json:"rev"`
+	Seq                 int64     `json:"seq"`
+	Deleted             bool      `json:"deleted"`
+	Kind                string    `json:"kind"`
+	Platform            string    `json:"platform"`
+	DisplayName         string    `json:"display_name"`
+	LoginIdentifier     *string   `json:"login_identifier,omitempty"`
+	LoginIdentifierHash *string   `json:"login_identifier_hash,omitempty"`
+	Status              string    `json:"status"`
+	TagsJSON            jsonRaw   `json:"tags_json,omitempty"`
+	MetadataJSON        jsonRaw   `json:"metadata_json,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+type AdminRelation struct {
+	ID            string    `json:"id"`
+	Rev           int64     `json:"rev"`
+	Seq           int64     `json:"seq"`
+	Deleted       bool      `json:"deleted"`
+	Kind          string    `json:"kind"`
+	FromKind      string    `json:"from_kind"`
+	FromID        string    `json:"from_id"`
+	ToKind        string    `json:"to_kind"`
+	ToID          string    `json:"to_id"`
+	RelationType  string    `json:"relation_type"`
+	FromAccountID *string   `json:"from_account_id,omitempty"`
+	ToAccountID   *string   `json:"to_account_id,omitempty"`
+	MetadataJSON  jsonRaw   `json:"metadata_json,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type AdminAccountPage struct {
+	Accounts []AdminAccount `json:"accounts"`
+}
+
+type AdminRelationPage struct {
+	Relations []AdminRelation `json:"relations"`
 }
 
 type AuditEntry struct {

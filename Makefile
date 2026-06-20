@@ -1,5 +1,5 @@
 # =============================================================
-# 2FA monorepo - top-level Makefile
+# Account Manager monorepo - top-level Makefile
 # =============================================================
 # Conventions:
 #   * Real targets only; phony targets declared explicitly.

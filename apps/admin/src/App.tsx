@@ -14,10 +14,11 @@ import {
   RefreshCw,
   Search,
   CheckCircle,
-  Clock
+  Clock,
+  Link
 } from 'lucide-react';
 import { ApiClient } from '@2fa/api-client';
-import type { AdminUser, AuditEntry, Device } from '@2fa/api-types';
+import type { AdminUser, AuditEntry, Device, AdminAccount, AdminRelation } from '@2fa/api-types';
 
 interface Toast {
   id: string;
@@ -27,6 +28,237 @@ interface Toast {
 
 function getErrorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function renderTags(tags: unknown) {
+  if (!tags) return null;
+  let parsed: string[] = [];
+  try {
+    if (Array.isArray(tags)) {
+      parsed = tags.map(String);
+    } else if (typeof tags === 'string') {
+      const p = JSON.parse(tags);
+      if (Array.isArray(p)) {
+        parsed = p.map(String);
+      } else {
+        parsed = [tags];
+      }
+    } else if (typeof tags === 'object' && tags !== null) {
+      parsed = Object.keys(tags);
+    }
+  } catch {
+    if (typeof tags === 'string') parsed = [tags];
+  }
+  if (parsed.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {parsed.map((tag, idx) => (
+        <span key={idx} className="bg-slate-100 text-slate-600 text-[10px] px-1.5 py-0.5 rounded font-medium">
+          {tag}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function renderMetadataSummary(meta: unknown) {
+  if (!meta) return null;
+  let text = '';
+  try {
+    if (typeof meta === 'object') {
+      text = JSON.stringify(meta);
+    } else if (typeof meta === 'string') {
+      text = meta;
+    }
+  } catch {
+    text = String(meta);
+  }
+  if (!text || text === '{}' || text === '[]') return null;
+  return (
+    <div className="text-[10px] text-slate-500 mt-1 font-mono break-all line-clamp-2" title={text}>
+      元数据: {text}
+    </div>
+  );
+}
+
+function maskLoginIdentifier(id: string | null | undefined): string | null {
+  if (!id) return null;
+  if (id.includes('***')) return id;
+  if (id.includes('@')) {
+    const parts = id.split('@');
+    const local = parts[0] || '';
+    const domain = parts[1] || '';
+    if (local.length <= 3) {
+      return `${local.charAt(0)}***@${domain}`;
+    }
+    return `${local.slice(0, 3)}***@${domain}`;
+  }
+  if (id.length <= 4) {
+    return `${id.charAt(0)}***`;
+  }
+  return `${id.slice(0, 3)}***${id.slice(-1)}`;
+}
+
+function RelationGraph({ accounts, relations }: { accounts: AdminAccount[]; relations: AdminRelation[] }) {
+  const activeAccounts = accounts.filter(acc => !acc.deleted);
+  const activeRelations = relations.filter(rel => !rel.deleted);
+
+  if (activeAccounts.length === 0) {
+    return (
+      <p className="text-slate-400 text-xs text-center py-6 bg-slate-50 border border-dashed border-slate-200 rounded-lg">
+        暂无可见的关系图谱数据。
+      </p>
+    );
+  }
+
+  const cx = 200;
+  const cy = 110;
+  const rx = 120;
+  const ry = 60;
+  const N = activeAccounts.length;
+
+  const nodes = activeAccounts.map((acc, index) => {
+    let x = cx;
+    let y = cy;
+    if (N > 1) {
+      const angle = (2 * Math.PI * index) / N - Math.PI / 2;
+      x = cx + rx * Math.cos(angle);
+      y = cy + ry * Math.sin(angle);
+    }
+    return { id: acc.id, x, y, account: acc };
+  });
+
+  const edges = activeRelations.map(rel => {
+    const fromId = rel.from_account_id || rel.from_id;
+    const toId = rel.to_account_id || rel.to_id;
+    const fromNode = nodes.find(n => n.id === fromId);
+    const toNode = nodes.find(n => n.id === toId);
+    const label = rel.relation_type || rel.kind || '关联';
+    return { fromNode, toNode, label, relation: rel };
+  }).filter((e): e is { fromNode: typeof nodes[0], toNode: typeof nodes[0], label: string, relation: AdminRelation } => !!(e.fromNode && e.toNode));
+
+  return (
+    <div className="w-full border border-slate-200 rounded-xl bg-white p-2">
+      <svg viewBox="0 0 400 220" className="w-full h-auto">
+        <defs>
+          <marker
+            id="arrow"
+            viewBox="0 0 10 10"
+            refX="20"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+          </marker>
+        </defs>
+
+        {edges.map((edge, idx) => {
+          const { fromNode, toNode, label } = edge;
+          const x1 = fromNode.x;
+          const y1 = fromNode.y;
+          const x2 = toNode.x;
+          const y2 = toNode.y;
+          const midX = (x1 + x2) / 2;
+          const midY = (y1 + y2) / 2;
+
+          return (
+            <g key={`edge-${idx}`}>
+              <line
+                x1={x1}
+                y1={y1}
+                x2={x2}
+                y2={y2}
+                stroke="#cbd5e1"
+                strokeWidth="1.5"
+                markerEnd="url(#arrow)"
+              />
+              <g transform={`translate(${midX}, ${midY})`}>
+                <rect
+                  x="-25"
+                  y="-7"
+                  width="50"
+                  height="14"
+                  rx="3"
+                  fill="#f1f5f9"
+                  stroke="#cbd5e1"
+                  strokeWidth="0.5"
+                />
+                <text
+                  textAnchor="middle"
+                  y="3.5"
+                  fontSize="8"
+                  fontWeight="medium"
+                  fill="#475569"
+                >
+                  {label.length > 8 ? `${label.slice(0, 7)}...` : label}
+                </text>
+              </g>
+            </g>
+          );
+        })}
+
+        {nodes.map((node) => {
+          const { x, y, account } = node;
+          return (
+            <g key={node.id} className="group">
+              <circle
+                cx={x}
+                cy={y}
+                r="16"
+                fill="#4f46e5"
+                stroke="#ffffff"
+                strokeWidth="2.5"
+                className="drop-shadow-md cursor-pointer hover:fill-indigo-500 transition-colors duration-150"
+              />
+              <text
+                x={x}
+                y={y + 3}
+                textAnchor="middle"
+                fontSize="9"
+                fontWeight="bold"
+                fill="#ffffff"
+                className="select-none pointer-events-none"
+              >
+                {account.platform ? account.platform.slice(0, 2).toUpperCase() : '?'}
+              </text>
+
+              <title>
+                {`名称: ${account.display_name || '未命名'}\n` +
+                 `平台: ${account.platform || '未知'}\n` +
+                 `类型: ${account.kind || '未知'}\n` +
+                 `状态: ${account.status || '活跃'}`}
+              </title>
+
+              <text
+                x={x}
+                y={y + 24}
+                textAnchor="middle"
+                fontSize="9"
+                fontWeight="semibold"
+                fill="#1e293b"
+                className="select-none pointer-events-none"
+              >
+                {account.display_name ? (account.display_name.length > 8 ? `${account.display_name.slice(0, 6)}...` : account.display_name) : '未命名'}
+              </text>
+
+              <text
+                x={x}
+                y={y + 32}
+                textAnchor="middle"
+                fontSize="7"
+                fill="#64748b"
+                className="select-none pointer-events-none"
+              >
+                {account.platform.length > 10 ? `${account.platform.slice(0, 8)}...` : account.platform} ({account.status || '活跃'})
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
 }
 
 export default function App() {
@@ -57,6 +289,10 @@ export default function App() {
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const [selectedUserDevices, setSelectedUserDevices] = useState<Device[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
+  const [selectedUserAccounts, setSelectedUserAccounts] = useState<AdminAccount[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [selectedUserRelations, setSelectedUserRelations] = useState<AdminRelation[]>([]);
+  const [relationsLoading, setRelationsLoading] = useState(false);
 
   const [confirmAction, setConfirmAction] = useState<{
     type: 'disable' | 'enable' | 'revoke';
@@ -286,19 +522,59 @@ export default function App() {
   const loadUserDevices = async (user: AdminUser) => {
     if (!apiClient.current) return;
     setDevicesLoading(true);
+    setAccountsLoading(true);
+    setRelationsLoading(true);
     setSelectedUser(user);
-    try {
-      const res = await apiClient.current.admin.listUserDevices(user.id);
-      if (res.ok) {
-        setSelectedUserDevices(res.data.devices);
-      } else {
-        addToast('error', '获取设备失败：' + res.error.message);
+    setSelectedUserDevices([]);
+    setSelectedUserAccounts([]);
+    setSelectedUserRelations([]);
+
+    const fetchDevices = async () => {
+      try {
+        const res = await apiClient.current!.admin.listUserDevices(user.id);
+        if (res.ok) {
+          setSelectedUserDevices(res.data.devices);
+        } else {
+          addToast('error', '获取设备失败：' + res.error.message);
+        }
+      } catch (err: unknown) {
+        addToast('error', getErrorMessage(err, '加载设备失败'));
+      } finally {
+        setDevicesLoading(false);
       }
-    } catch (err: unknown) {
-      addToast('error', getErrorMessage(err, '加载设备失败'));
-    } finally {
-      setDevicesLoading(false);
-    }
+    };
+
+    const fetchAccounts = async () => {
+      try {
+        const res = await apiClient.current!.admin.listUserAccounts(user.id);
+        if (res.ok) {
+          setSelectedUserAccounts(res.data.accounts);
+        } else {
+          addToast('error', '获取账户可见元数据失败：' + res.error.message);
+        }
+      } catch (err: unknown) {
+        addToast('error', getErrorMessage(err, '加载账户可见元数据失败'));
+      } finally {
+        setAccountsLoading(false);
+      }
+    };
+
+    const fetchRelations = async () => {
+      try {
+        const res = await apiClient.current!.admin.listUserRelations(user.id);
+        if (res.ok) {
+          setSelectedUserRelations(res.data.relations);
+        } else {
+          addToast('error', '获取关联可见元数据失败：' + res.error.message);
+        }
+      } catch (err: unknown) {
+        addToast('error', getErrorMessage(err, '加载关联可见元数据失败'));
+      } finally {
+        setRelationsLoading(false);
+      }
+    };
+
+    void Promise.all([fetchDevices(), fetchAccounts(), fetchRelations()]);
   };
 
   const executeConfirmedAction = async () => {
@@ -365,7 +641,7 @@ export default function App() {
               {needsSetup ? '初始化管理员账号' : '管理员控制门户'}
             </h1>
             <p className="text-sm text-slate-500 mt-1">
-              {needsSetup ? '检测到这是首次部署，请创建第一个管理员。' : '连接到您的自托管 2FA 后端部署。'}
+              {needsSetup ? '检测到这是首次部署，请创建第一个管理员。' : '连接到您的自托管账号管理器后端部署。'}
             </p>
           </div>
 
@@ -447,7 +723,7 @@ export default function App() {
       <div className="md:hidden bg-slate-900 text-white p-4 flex items-center justify-between">
         <span className="font-bold flex items-center gap-2">
           <Shield className="w-5 h-5 text-indigo-400" />
-          管理后台
+          账号管理器 管理后台
         </span>
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -467,7 +743,7 @@ export default function App() {
             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white">
               <Shield className="w-5 h-5" />
             </div>
-            <span className="font-bold text-white tracking-tight">管理控制台</span>
+            <span className="font-bold text-white tracking-tight">账号管理器 管理后台</span>
           </div>
 
           <nav className="space-y-1">
@@ -863,8 +1139,8 @@ export default function App() {
             <div className="p-6 overflow-y-auto flex-1 space-y-6">
               <div className="flex justify-between items-center pb-4 border-b border-slate-100">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-900 truncate">{selectedUser.username} 的设备</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">撤销令牌并验证连接历史记录。</p>
+                  <h2 className="text-lg font-bold text-slate-900 truncate">{selectedUser.username} 详情与元数据</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">管理已注册设备并查看同步元数据。</p>
                 </div>
                 <button
                   onClick={() => setSelectedUser(null)}
@@ -875,51 +1151,187 @@ export default function App() {
                 </button>
               </div>
 
-              {devicesLoading ? (
-                <div className="space-y-3">
-                  {[1, 2].map((n) => (
-                    <div key={n} className="h-16 w-full bg-slate-100 animate-pulse rounded-lg"></div>
-                  ))}
-                </div>
-              ) : selectedUserDevices.length === 0 ? (
-                <p className="text-slate-400 text-sm text-center py-12">未注册任何活跃设备。</p>
-              ) : (
-                <div className="space-y-3">
-                  {selectedUserDevices.map((dev) => (
-                    <div
-                      key={dev.id}
-                      className="border border-slate-200 rounded-xl p-4 flex justify-between items-center bg-slate-50"
-                    >
-                      <div className="min-w-0 pr-4">
-                        <span className="font-semibold text-sm text-slate-800 flex items-center gap-1.5">
-                          <Smartphone className="w-4 h-4 text-slate-400 shrink-0" />
-                          {dev.label}
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono block mt-1 truncate">
-                          ID：{dev.id}
-                        </span>
-                        <span className="text-[10px] text-slate-400 block mt-0.5">
-                          添加时间：{new Date(dev.created_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => {
-                          setConfirmAction({
-                            type: 'revoke',
-                            title: '撤销设备授权？',
-                            message: `撤销 ${dev.label} 将立即终止其会话令牌。该设备在下一次同步请求时将被引导至锁定屏幕。`,
-                            userId: selectedUser.id,
-                            deviceId: dev.id
-                          });
-                        }}
-                        className="border border-rose-200 hover:bg-rose-50 text-rose-600 font-semibold text-xs py-1.5 px-3 rounded-lg transition-colors focus:outline-none"
+              <div className="space-y-3">
+                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <Smartphone className="w-4 h-4 text-indigo-500" />
+                  已注册设备 ({selectedUserDevices.length})
+                </h3>
+                {devicesLoading ? (
+                  <div className="space-y-3">
+                    {[1, 2].map((n) => (
+                      <div key={n} className="h-16 w-full bg-slate-100 animate-pulse rounded-lg"></div>
+                    ))}
+                  </div>
+                ) : selectedUserDevices.length === 0 ? (
+                  <p className="text-slate-400 text-sm text-center py-6 bg-slate-50 border border-dashed border-slate-200 rounded-lg">
+                    未注册任何活跃设备。
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {selectedUserDevices.map((dev) => (
+                      <div
+                        key={dev.id}
+                        className="border border-slate-200 rounded-xl p-4 flex justify-between items-center bg-slate-50"
                       >
-                        撤销
-                      </button>
-                    </div>
-                  ))}
+                        <div className="min-w-0 pr-4">
+                          <span className="font-semibold text-sm text-slate-800 flex items-center gap-1.5">
+                            {dev.label}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono block mt-1 truncate">
+                            ID：{dev.id}
+                          </span>
+                          <span className="text-[10px] text-slate-400 block mt-0.5">
+                            添加时间：{new Date(dev.created_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setConfirmAction({
+                              type: 'revoke',
+                              title: '撤销设备授权？',
+                              message: `撤销 ${dev.label} 将立即终止其会话令牌。该设备在下一次同步请求时将被引导至锁定屏幕。`,
+                              userId: selectedUser.id,
+                              deviceId: dev.id
+                            });
+                          }}
+                          className="border border-rose-200 hover:bg-rose-50 text-rose-600 font-semibold text-xs py-1.5 px-3 rounded-lg transition-colors focus:outline-none"
+                        >
+                          撤销
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-slate-100 pt-6 space-y-6">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-1">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                    <Shield className="w-4 h-4 text-indigo-500" />
+                    服务端可见元数据 (不包含敏感密钥)
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-normal">
+                    由于启用端到端加密，此处仅展示服务端同步所需的非敏感元数据。实际账户密码或 TOTP 密钥（secrets）已在客户端加密，服务端无权访问且不予展示。
+                  </p>
                 </div>
-              )}
+
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 uppercase tracking-wider">
+                    <Database className="w-3.5 h-3.5 text-indigo-500" />
+                    关联账户 ({selectedUserAccounts.length})
+                  </h4>
+                  {accountsLoading ? (
+                    <div className="space-y-3">
+                      {[1, 2].map((n) => (
+                        <div key={n} className="h-14 w-full bg-slate-100 animate-pulse rounded-lg"></div>
+                      ))}
+                    </div>
+                  ) : selectedUserAccounts.length === 0 ? (
+                    <p className="text-slate-400 text-xs text-center py-4 bg-slate-50 border border-dashed border-slate-200 rounded-lg">
+                      无可见账户元数据。
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {selectedUserAccounts.map((acc) => (
+                        <div key={acc.id} className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-1.5 text-xs">
+                          <div className="flex justify-between items-start gap-2">
+                            <div className="min-w-0">
+                              <span className="font-bold text-slate-800 text-sm block truncate">
+                                {acc.display_name || '未命名账户'}
+                              </span>
+                              <span className="text-[11px] text-slate-500 block truncate">
+                                {acc.platform} {acc.kind ? `(${acc.kind})` : ''}
+                              </span>
+                            </div>
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                              acc.deleted ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'
+                            }`}>
+                              {acc.deleted ? '已删除' : (acc.status || '活跃')}
+                            </span>
+                          </div>
+
+                          {acc.login_identifier && (
+                            <div className="text-[11px] text-slate-600 bg-white px-2 py-1 rounded border border-slate-100 font-mono break-all">
+                              登录标识: {maskLoginIdentifier(acc.login_identifier)}
+                            </div>
+                          )}
+
+                          {renderTags(acc.tags_json)}
+                          {renderMetadataSummary(acc.metadata_json)}
+
+                          <div className="flex justify-between items-center text-[10px] text-slate-400 pt-1 border-t border-slate-100 font-mono">
+                            <span>Seq: {acc.seq} | Rev: {acc.rev}</span>
+                            <span>{new Date(acc.updated_at).toLocaleString()}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 uppercase tracking-wider">
+                    <Activity className="w-3.5 h-3.5 text-indigo-500" />
+                    关系图谱
+                  </h4>
+                  {relationsLoading || accountsLoading ? (
+                    <div className="h-14 w-full bg-slate-100 animate-pulse rounded-lg"></div>
+                  ) : (
+                    <RelationGraph accounts={selectedUserAccounts} relations={selectedUserRelations} />
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 uppercase tracking-wider">
+                    <Link className="w-3.5 h-3.5 text-indigo-500" />
+                    账户关系 ({selectedUserRelations.length})
+                  </h4>
+                  {relationsLoading ? (
+                    <div className="space-y-3">
+                      {[1, 2].map((n) => (
+                        <div key={n} className="h-14 w-full bg-slate-100 animate-pulse rounded-lg"></div>
+                      ))}
+                    </div>
+                  ) : selectedUserRelations.length === 0 ? (
+                    <p className="text-slate-400 text-xs text-center py-4 bg-slate-50 border border-dashed border-slate-200 rounded-lg">
+                      无可见关系元数据。
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {selectedUserRelations.map((rel) => (
+                        <div key={rel.id} className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2 text-xs">
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-slate-800">{rel.kind || '关联关系'}</span>
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                              rel.deleted ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'
+                            }`}>
+                              {rel.deleted ? '已删除' : '活跃'}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-600 bg-white p-2 rounded border border-slate-100">
+                            <div className="min-w-0">
+                              <span className="text-slate-400 block uppercase tracking-wider text-[8px]">From ({rel.from_kind})</span>
+                              <span className="font-mono break-all block">{rel.from_id}</span>
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-slate-400 block uppercase tracking-wider text-[8px]">To ({rel.to_kind})</span>
+                              <span className="font-mono break-all block">{rel.to_id}</span>
+                            </div>
+                          </div>
+
+                          {renderMetadataSummary(rel.metadata_json)}
+
+                          <div className="flex justify-between items-center text-[10px] text-slate-400 pt-1 border-t border-slate-100 font-mono">
+                            <span>Seq: {rel.seq} | Rev: {rel.rev}</span>
+                            <span>{new Date(rel.updated_at).toLocaleString()}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
 
             <div className="bg-slate-50 p-6 border-t border-slate-100">

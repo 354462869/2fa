@@ -1,4 +1,4 @@
-import type { Item, Group } from '@2fa/api-types';
+import type { Item, Group, Account, Relation } from '@2fa/api-types';
 
 export interface StorageLocal {
   get(keys: string[] | Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -49,7 +49,7 @@ export const localStore: StorageLocal = {
 
 export function openStorageDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('2fa-vault-db', 2);
+    const request = indexedDB.open('2fa-vault-db', 3);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('items')) {
@@ -60,6 +60,12 @@ export function openStorageDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('keys')) {
         db.createObjectStore('keys');
+      }
+      if (!db.objectStoreNames.contains('accounts')) {
+        db.createObjectStore('accounts', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('relations')) {
+        db.createObjectStore('relations', { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -144,10 +150,86 @@ export async function deleteGroups(ids: string[]): Promise<void> {
 export async function clearVault(): Promise<void> {
   const db = await openStorageDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(['items', 'groups', 'keys'], 'readwrite');
+    const tx = db.transaction(['items', 'groups', 'keys', 'accounts', 'relations'], 'readwrite');
     tx.objectStore('items').clear();
     tx.objectStore('groups').clear();
     tx.objectStore('keys').clear();
+    tx.objectStore('accounts').clear();
+    tx.objectStore('relations').clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function saveAccounts(accounts: Account[]): Promise<void> {
+  const db = await openStorageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('accounts', 'readwrite');
+    const store = tx.objectStore('accounts');
+    for (const account of accounts) {
+      store.put(account);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getAccounts(): Promise<Account[]> {
+  const db = await openStorageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('accounts', 'readonly');
+    const store = tx.objectStore('accounts');
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function deleteAccounts(ids: string[]): Promise<void> {
+  const db = await openStorageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('accounts', 'readwrite');
+    const store = tx.objectStore('accounts');
+    for (const id of ids) {
+      store.delete(id);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function saveRelations(relations: Relation[]): Promise<void> {
+  const db = await openStorageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('relations', 'readwrite');
+    const store = tx.objectStore('relations');
+    for (const relation of relations) {
+      store.put(relation);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getRelations(): Promise<Relation[]> {
+  const db = await openStorageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('relations', 'readonly');
+    const store = tx.objectStore('relations');
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function deleteRelations(ids: string[]): Promise<void> {
+  const db = await openStorageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('relations', 'readwrite');
+    const store = tx.objectStore('relations');
+    for (const id of ids) {
+      store.delete(id);
+    }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

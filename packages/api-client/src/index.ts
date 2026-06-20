@@ -1,4 +1,7 @@
 import type {
+  Account,
+  AdminAccountPage,
+  AdminRelationPage,
   AdminUser,
   AdminUserPage,
   AdminSetupStatusResponse,
@@ -18,6 +21,7 @@ import type {
   PutEnvelopeRequest,
   RegisterDeviceRequest,
   RegisterRequest,
+  Relation,
   Result,
   SessionResponse,
   UserMe,
@@ -194,6 +198,10 @@ export class ApiClient {
       this.request('GET', `/v1/sync/items/${encodeURIComponent(id)}`),
     group: (id: Id): Promise<Result<Group>> =>
       this.request('GET', `/v1/sync/groups/${encodeURIComponent(id)}`),
+    account: (id: Id): Promise<Result<Account>> =>
+      this.request('GET', `/v1/sync/accounts/${encodeURIComponent(id)}`),
+    relation: (id: Id): Promise<Result<Relation>> =>
+      this.request('GET', `/v1/sync/relations/${encodeURIComponent(id)}`),
   };
 
   admin = {
@@ -218,6 +226,10 @@ export class ApiClient {
       this.request('POST', `/v1/admin/users/${encodeURIComponent(id)}/enable`),
     listUserDevices: (userId: Id): Promise<Result<{ devices: Device[] }>> =>
       this.request('GET', `/v1/admin/users/${encodeURIComponent(userId)}/devices`),
+    listUserAccounts: (userId: Id): Promise<Result<AdminAccountPage>> =>
+      this.request('GET', `/v1/admin/users/${encodeURIComponent(userId)}/accounts`),
+    listUserRelations: (userId: Id): Promise<Result<AdminRelationPage>> =>
+      this.request('GET', `/v1/admin/users/${encodeURIComponent(userId)}/relations`),
     revokeDevice: (userId: Id, deviceId: Id): Promise<Result<void>> =>
       this.request(
         'DELETE',

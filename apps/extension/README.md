@@ -1,6 +1,6 @@
-# 2FA 浏览器扩展（Chromium MV3）
+# 账号管理器浏览器扩展（Chromium MV3）
 
-本目录包含 2FA 管理器的 Chromium MV3 浏览器扩展实现。扩展负责本地加密保管库、离线 TOTP 生成、分组管理、锁定/解锁、远程账号连接和密文同步。
+本目录包含账号管理器（Account Manager）的 Chromium MV3 浏览器扩展实现。扩展负责本地加密保管库、离线 TOTP 生成、分组管理、锁定/解锁、远程账号连接和密文同步。
 
 ## 实现者契约
 
@@ -20,6 +20,7 @@
 
 - `src/App.tsx`：侧边栏主界面、TOTP 条目、分组、同步和设置页面。
 - `src/background.ts`：MV3 service worker，负责会话锁定和便利优先的本地同步凭证保护。
+- `src/content.ts`：最小手动填充 content script，仅响应用户在侧边栏触发的填充消息。
 - `src/utils/crypto.ts`：Web Crypto 封套加密、同步密码包裹和本地设备密钥管理。
 - `src/utils/totp.ts`：TOTP 生成逻辑。
 - `src/utils/storage.ts`：IndexedDB 和本地配置存储。

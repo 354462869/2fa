@@ -6,9 +6,10 @@
 ## 1. 目标
 
 - 每个用户一个密钥库。多台设备可以同时推送和拉取。
-- 每条*记录*（条目或分组）独立进行版本控制。
+- 每条*记录*（条目、分组、账号元数据或关系）独立进行版本控制。
 - 服务端检测过期写入并拒绝。由客户端执行合并。
-- 服务端存储密文以及少量非敏感的同步元数据。它不理解记录内容。
+- 服务端存储密文、账号库服务端可见元数据以及少量非敏感的同步元数据。
+  它不理解或解密秘密正文。
 - 墓碑记录是一等公民。删除是一种能够在同步中存活的写入。
 
 ## 2. 术语
@@ -27,7 +28,8 @@
 
 ## 3. 记录
 
-同步时存在两种记录类型：
+同步时存在四种记录类型。旧客户端只使用 `Item` / `Group`；账号库客户端额外使用
+`Account` / `Relation`。服务端保持同一个每用户 `seq` 流。
 
 ### 3.1 `Item`
 
@@ -78,12 +80,62 @@
 
 ### 3.3 服务端可以读取的明文字段
 
-仅限于：
+旧 `Item` / `Group` 仅限于：
 
 - `id`、`group_id`、`rev`、`seq`、`deleted`、`updated_at`、`sort_index`、
   密文字节长度，以及完整性绑定的 `alg`/`iv_b64`。
 
 其他任意内容必须放在 `ct_b64` 中。
+
+### 3.4 `Account`
+
+表示服务端可见的账号运营元数据和客户端加密的账号秘密正文。
+
+```jsonc
+{
+  "id": "01J0Q5...",
+  "rev": 3,
+  "seq": 4312,
+  "deleted": false,
+  "kind": "gpt",
+  "platform": "OpenAI",
+  "display_name": "ChatGPT Plus 账号",
+  "login_identifier": "u***r@gmail.com",
+  "login_identifier_hash": null,
+  "status": "active",
+  "tags_json": ["GPT"],
+  "metadata_json": { "has_password": true, "has_totp": true },
+  "secret_ciphertext": { "alg": "A256GCM", "iv_b64": "...", "ct_b64": "..." },
+  "updated_at": "2026-06-20T03:21:11Z"
+}
+```
+
+安全默认策略下，`login_identifier` 必须是掩码值或为空；`login_identifier_hash` 默认为空，
+不得保存完整登录标识的普通 SHA-256 等可枚举哈希。完整登录标识、密码、TOTP secret、
+恢复码、代理认证信息、token 等必须只存在于 `secret_ciphertext`。
+
+### 3.5 `Relation`
+
+表示账号、手机号、代理、恢复邮箱等记录之间的服务端可见关系。
+
+```jsonc
+{
+  "id": "01J0Q5...-proxy",
+  "rev": 1,
+  "seq": 4313,
+  "deleted": false,
+  "kind": "proxy",
+  "from_kind": "account",
+  "from_id": "01J0Q5...",
+  "to_kind": "proxy",
+  "to_id": "opaque-proxy-target-id",
+  "metadata_json": { "label": "proxy" },
+  "updated_at": "2026-06-20T03:21:12Z"
+}
+```
+
+关系可以没有 `secret_ciphertext`。如果某类关系未来需要敏感正文，必须放入
+`secret_ciphertext`，不得放入 `metadata_json`。
 
 ## 4. `seq` 计数器
 
@@ -95,7 +147,7 @@
 - 客户端持久化它所见过的最大的 `seq`。
 
 该计数器是**按用户**而非按记录类型维护的。这保证了增量数据能够提供跨越
-条目和分组的一致性全局排序。
+条目、分组、账号和关系的一致性全局排序。
 
 ## 5. 端点（记录级）
 
@@ -125,6 +177,8 @@
 {
   "items":  [ ... 最多 `limit` 条 seq > since_seq 的 Item 记录 ... ],
   "groups": [ ... 最多 `limit` 条 seq > since_seq 的 Group 记录 ... ],
+  "accounts": [ ... Account 记录 ... ],
+  "relations": [ ... Relation 记录 ... ],
   "next_seq": 4321,        // 返回记录中最高的 seq
   "has_more": false
 }
@@ -147,6 +201,17 @@
     { "id": "...", "deleted": false, "sort_index": 1024,
       "expected_rev": null,
       "ciphertext": { "alg": "...", "iv_b64": "...", "ct_b64": "..." } }
+  ],
+  "accounts": [
+    { "id": "...", "deleted": false, "kind": "gpt", "platform": "OpenAI",
+      "display_name": "ChatGPT Plus", "login_identifier": "u***r@gmail.com",
+      "expected_rev": null,
+      "secret_ciphertext": { "alg": "...", "iv_b64": "...", "ct_b64": "..." } }
+  ],
+  "relations": [
+    { "id": "...", "deleted": false, "kind": "proxy", "from_kind": "account",
+      "from_id": "...", "to_kind": "proxy", "to_id": "opaque-target-id",
+      "expected_rev": null, "metadata_json": { "label": "proxy" } }
   ]
 }
 ```
@@ -173,9 +238,16 @@
 `conflicts` 条目包含该记录的**当前服务端状态**，客户端无需再发起一次往返。
 客户端合并后重新推送这些记录（参见第 7 节）。
 
-### 5.5 `GET /v1/sync/items/{id}` 和 `/v1/sync/groups/{id}`
+### 5.5 单条记录查询
 
-单条记录查询，用于定向恢复（例如，冲突响应未包含该记录时）。
+以下端点用于定向恢复（例如，冲突响应未包含该记录时）：
+
+- `GET /v1/sync/items/{id}`
+- `GET /v1/sync/groups/{id}`
+- `GET /v1/sync/accounts/{id}`
+- `GET /v1/sync/relations/{id}`
+
+同步端点会返回 `secret_ciphertext`，因为扩展需要在客户端解密；管理端点不得返回该字段。
 
 ## 6. 墓碑记录
 

@@ -134,6 +134,48 @@ export interface Group {
   ciphertext?: RecordCipher | null;
 }
 
+export interface Account {
+  id: Id;
+  rev: number;
+  seq: number;
+  deleted: boolean;
+  kind: string;
+  platform: string;
+  display_name: string;
+  login_identifier?: string | null;
+  login_identifier_hash?: string | null;
+  status: string;
+  tags_json?: unknown;
+  metadata_json?: unknown;
+  /** Server-populated. Optional on locally-constructed objects pre-sync. */
+  created_at?: Timestamp;
+  updated_at: Timestamp;
+  secret_ciphertext?: RecordCipher | null;
+}
+
+export interface Relation {
+  id: Id;
+  rev: number;
+  seq: number;
+  deleted: boolean;
+  kind: string;
+  from_kind: string;
+  from_id: Id;
+  to_kind: string;
+  to_id: Id;
+  /** Server-populated alias mirroring `kind`. */
+  relation_type?: string;
+  /** Server-populated when `from_kind === 'account'`. */
+  from_account_id?: Id | null;
+  /** Server-populated when `to_kind === 'account'`. */
+  to_account_id?: Id | null;
+  metadata_json?: unknown;
+  /** Server-populated. Optional on locally-constructed objects pre-sync. */
+  created_at?: Timestamp;
+  updated_at: Timestamp;
+  secret_ciphertext?: RecordCipher | null;
+}
+
 export interface PullRequest {
   since_seq: number;
   limit?: number;
@@ -142,6 +184,8 @@ export interface PullRequest {
 export interface PullResponse {
   items: Item[];
   groups: Group[];
+  accounts: Account[];
+  relations: Relation[];
   next_seq: number;
   has_more: boolean;
 }
@@ -162,12 +206,48 @@ export interface PushGroup {
   ciphertext?: RecordCipher | null;
 }
 
+export interface PushAccount {
+  id: Id;
+  deleted: boolean;
+  kind: string;
+  platform: string;
+  display_name: string;
+  login_identifier?: string | null;
+  login_identifier_hash?: string | null;
+  status: string;
+  tags_json?: unknown;
+  metadata_json?: unknown;
+  expected_rev: number | null;
+  secret_ciphertext?: RecordCipher | null;
+}
+
+export interface PushRelation {
+  id: Id;
+  deleted: boolean;
+  kind?: string;
+  from_kind?: string;
+  from_id?: Id;
+  to_kind?: string;
+  to_id?: Id;
+  /** Alias for `kind`. Used when `kind` is omitted. */
+  relation_type?: string;
+  /** Alias for `from_id` with `from_kind` defaulted to `'account'`. */
+  from_account_id?: Id;
+  /** Alias for `to_id` with `to_kind` defaulted to `'account'`. */
+  to_account_id?: Id;
+  metadata_json?: unknown;
+  expected_rev: number | null;
+  secret_ciphertext?: RecordCipher | null;
+}
+
 export interface PushRequest {
   items?: PushItem[];
   groups?: PushGroup[];
+  accounts?: PushAccount[];
+  relations?: PushRelation[];
 }
 
-export type RecordKind = 'item' | 'group';
+export type RecordKind = 'item' | 'group' | 'account' | 'relation';
 
 export interface AppliedRecord {
   id: Id;
@@ -183,6 +263,8 @@ export interface ConflictRecord {
   current_seq: number;
   current_item?: Item | null;
   current_group?: Group | null;
+  current_account?: Account | null;
+  current_relation?: Relation | null;
 }
 
 export interface PushResponse {
@@ -205,6 +287,17 @@ export interface AdminUser {
 export interface AdminUserPage {
   users: AdminUser[];
   next_cursor?: string | null;
+}
+
+export type AdminAccount = Omit<Account, 'secret_ciphertext'>;
+export type AdminRelation = Omit<Relation, 'secret_ciphertext'>;
+
+export interface AdminAccountPage {
+  accounts: AdminAccount[];
+}
+
+export interface AdminRelationPage {
+  relations: AdminRelation[];
 }
 
 export type ActorKind = 'user' | 'admin' | 'system';

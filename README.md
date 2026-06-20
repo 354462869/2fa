@@ -1,6 +1,6 @@
-# 2fa — 自托管 TOTP 管理器
+# 账号管理器 (Account Manager)
 
-本仓库提供一个可自托管、端到端加密的 TOTP 管理器：
+账号管理器（Account Manager）是一个自托管的本地账号管理插件，支持端到端加密的 TOTP/2FA 管理、账号资料存储与多设备同步：
 
 - `cmd/server` + `internal/...` — Go + SQLite 同步 API 与管理 API。
 - `apps/extension` — Chromium MV3 浏览器扩展（离线优先 TOTP）。
@@ -58,7 +58,7 @@ docker run --rm -p 8080:8080 \
   -e SERVER_DB_PATH=/data/2fa.sqlite \
   -e SERVER_PUBLIC_ORIGIN=http://127.0.0.1:8080 \
   -e SERVER_ALLOWED_ORIGINS=http://127.0.0.1:8080 \
-  ghcr.io/354462869/2fa-server:v0.1.3
+  ghcr.io/354462869/2fa-server:v0.2.0
 ```
 
 打开 `http://127.0.0.1:8080` 会进入管理后台。首次部署时，如果数据库为空，后台会提示创建第一个管理员账号。生产环境请设置强随机 `SERVER_SESSION_SECRET`；如果通过公网 IP 或域名访问，也要把 `SERVER_PUBLIC_ORIGIN` 和 `SERVER_ALLOWED_ORIGINS` 改成实际访问地址。
@@ -91,6 +91,10 @@ docker compose -f deploy/docker-compose.yml up --build
 - 点击“识别当前页”，自动扫描当前标签页可见区域内的 2FA 二维码。
 
 成功识别后，扩展会自动填入账户信息，并在保存前显示当前二维码预览，便于核对。
+
+### 手动填充账号
+
+账号卡片提供用户手动触发的“填充”操作。扩展只会在用户点击后向当前标签页发送一次用户名/密码填充消息；不会静默自动填充，也不会把明文密码发送给服务端或管理后台。
 
 ### 同步到自托管服务端
 

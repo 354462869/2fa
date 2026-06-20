@@ -130,6 +130,54 @@ CREATE TABLE IF NOT EXISTS groups (
 
 CREATE INDEX IF NOT EXISTS idx_groups_seq ON groups(user_id, seq);
 
+CREATE TABLE IF NOT EXISTS accounts (
+	id TEXT NOT NULL,
+	user_id TEXT NOT NULL,
+	rev INTEGER NOT NULL,
+	seq INTEGER NOT NULL,
+	deleted INTEGER NOT NULL DEFAULT 0,
+	kind TEXT NOT NULL DEFAULT '',
+	platform TEXT NOT NULL DEFAULT '',
+	display_name TEXT NOT NULL DEFAULT '',
+	login_identifier TEXT,
+	login_identifier_hash TEXT,
+	status TEXT NOT NULL DEFAULT '',
+	tags_json BLOB,
+	metadata_json BLOB,
+	secret_ciphertext BLOB,
+	created_at TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (user_id, id),
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_seq ON accounts(user_id, seq);
+CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(user_id, platform);
+CREATE INDEX IF NOT EXISTS idx_accounts_login_hash ON accounts(user_id, login_identifier_hash);
+
+CREATE TABLE IF NOT EXISTS relations (
+	id TEXT NOT NULL,
+	user_id TEXT NOT NULL,
+	rev INTEGER NOT NULL,
+	seq INTEGER NOT NULL,
+	deleted INTEGER NOT NULL DEFAULT 0,
+	kind TEXT NOT NULL DEFAULT '',
+	from_kind TEXT NOT NULL DEFAULT '',
+	from_id TEXT NOT NULL DEFAULT '',
+	to_kind TEXT NOT NULL DEFAULT '',
+	to_id TEXT NOT NULL DEFAULT '',
+	metadata_json BLOB,
+	secret_ciphertext BLOB,
+	created_at TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (user_id, id),
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_relations_seq ON relations(user_id, seq);
+CREATE INDEX IF NOT EXISTS idx_relations_from ON relations(user_id, from_kind, from_id);
+CREATE INDEX IF NOT EXISTS idx_relations_to ON relations(user_id, to_kind, to_id);
+
 CREATE TABLE IF NOT EXISTS audit_log (
 	id TEXT PRIMARY KEY,
 	at TEXT NOT NULL,
@@ -145,7 +193,55 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log(at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_kind, actor_id);
 `
-	_, err := s.db.Exec(schema)
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("accounts", "created_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("add accounts.created_at: %w", err)
+	}
+	if err := s.ensureColumn("relations", "created_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("add relations.created_at: %w", err)
+	}
+	// Backfill empty created_at from updated_at for legacy rows so existing data
+	// retains a stable creation timestamp when the column is first introduced.
+	if _, err := s.db.Exec(`UPDATE accounts SET created_at = updated_at WHERE created_at = '' OR created_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill accounts.created_at: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE relations SET created_at = updated_at WHERE created_at = '' OR created_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill relations.created_at: %w", err)
+	}
+	return nil
+}
+
+// ensureColumn adds the named column to a table when it is missing. It is
+// idempotent so the migration can be re-run on databases that already include
+// the column.
+func (s *SQLiteStore) ensureColumn(table, column, ddl string) error {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, ddl))
 	return err
 }
 
@@ -510,7 +606,134 @@ func (s *SQLiteStore) GetGroup(ctx context.Context, userID, groupID string) (*Gr
 	return &group, nil
 }
 
-func (s *SQLiteStore) PullRecords(ctx context.Context, userID string, sinceSeq int64, limit int) ([]*Item, []*Group, int64, bool, error) {
+func (s *SQLiteStore) GetAccount(ctx context.Context, userID, accountID string) (*Account, error) {
+	var account Account
+	var deleted int
+	var loginIdentifier, loginIdentifierHash sql.NullString
+	var tagsJSON, metadataJSON, secretCiphertext []byte
+	var createdAt, updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, rev, seq, deleted, kind, platform, display_name, login_identifier,
+			login_identifier_hash, status, tags_json, metadata_json, secret_ciphertext, created_at, updated_at
+		FROM accounts WHERE user_id = ? AND id = ?`, userID, accountID).Scan(
+		&account.ID, &account.UserID, &account.Rev, &account.Seq, &deleted, &account.Kind,
+		&account.Platform, &account.DisplayName, &loginIdentifier, &loginIdentifierHash,
+		&account.Status, &tagsJSON, &metadataJSON, &secretCiphertext, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	account.Deleted = intToBool(deleted)
+	if loginIdentifier.Valid {
+		account.LoginIdentifier = &loginIdentifier.String
+	}
+	if loginIdentifierHash.Valid {
+		account.LoginIdentifierHash = &loginIdentifierHash.String
+	}
+	account.TagsJSON = tagsJSON
+	account.MetadataJSON = metadataJSON
+	account.SecretCiphertext = secretCiphertext
+	account.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	account.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &account, nil
+}
+
+func (s *SQLiteStore) GetRelation(ctx context.Context, userID, relationID string) (*Relation, error) {
+	var relation Relation
+	var deleted int
+	var metadataJSON, secretCiphertext []byte
+	var createdAt, updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, rev, seq, deleted, kind, from_kind, from_id, to_kind, to_id,
+			metadata_json, secret_ciphertext, created_at, updated_at
+		FROM relations WHERE user_id = ? AND id = ?`, userID, relationID).Scan(
+		&relation.ID, &relation.UserID, &relation.Rev, &relation.Seq, &deleted, &relation.Kind,
+		&relation.FromKind, &relation.FromID, &relation.ToKind, &relation.ToID,
+		&metadataJSON, &secretCiphertext, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	relation.Deleted = intToBool(deleted)
+	relation.MetadataJSON = metadataJSON
+	relation.SecretCiphertext = secretCiphertext
+	relation.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	relation.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &relation, nil
+}
+
+func (s *SQLiteStore) ListAccountsByUser(ctx context.Context, userID string) ([]*Account, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, rev, seq, deleted, kind, platform, display_name, login_identifier,
+			login_identifier_hash, status, tags_json, metadata_json, secret_ciphertext, created_at, updated_at
+		FROM accounts WHERE user_id = ? ORDER BY seq ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	accounts := []*Account{}
+	for rows.Next() {
+		var account Account
+		var deleted int
+		var loginIdentifier, loginIdentifierHash sql.NullString
+		var createdAt, updatedAt string
+		if err := rows.Scan(
+			&account.ID, &account.UserID, &account.Rev, &account.Seq, &deleted, &account.Kind,
+			&account.Platform, &account.DisplayName, &loginIdentifier, &loginIdentifierHash,
+			&account.Status, &account.TagsJSON, &account.MetadataJSON, &account.SecretCiphertext, &createdAt, &updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		account.Deleted = intToBool(deleted)
+		if loginIdentifier.Valid {
+			account.LoginIdentifier = &loginIdentifier.String
+		}
+		if loginIdentifierHash.Valid {
+			account.LoginIdentifierHash = &loginIdentifierHash.String
+		}
+		account.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		account.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		accounts = append(accounts, &account)
+	}
+	return accounts, rows.Err()
+}
+
+func (s *SQLiteStore) ListRelationsByUser(ctx context.Context, userID string) ([]*Relation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, rev, seq, deleted, kind, from_kind, from_id, to_kind, to_id,
+			metadata_json, secret_ciphertext, created_at, updated_at
+		FROM relations WHERE user_id = ? ORDER BY seq ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	relations := []*Relation{}
+	for rows.Next() {
+		var relation Relation
+		var deleted int
+		var createdAt, updatedAt string
+		if err := rows.Scan(
+			&relation.ID, &relation.UserID, &relation.Rev, &relation.Seq, &deleted, &relation.Kind,
+			&relation.FromKind, &relation.FromID, &relation.ToKind, &relation.ToID,
+			&relation.MetadataJSON, &relation.SecretCiphertext, &createdAt, &updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		relation.Deleted = intToBool(deleted)
+		relation.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		relation.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		relations = append(relations, &relation)
+	}
+	return relations, rows.Err()
+}
+
+func (s *SQLiteStore) PullRecords(ctx context.Context, userID string, sinceSeq int64, limit int) ([]*Item, []*Group, []*Account, []*Relation, int64, bool, error) {
 	type recordRef struct {
 		kind string
 		id   string
@@ -522,10 +745,14 @@ func (s *SQLiteStore) PullRecords(ctx context.Context, userID string, sinceSeq i
 			SELECT 'item' AS kind, id, seq FROM items WHERE user_id = ? AND seq > ?
 			UNION ALL
 			SELECT 'group' AS kind, id, seq FROM groups WHERE user_id = ? AND seq > ?
+			UNION ALL
+			SELECT 'account' AS kind, id, seq FROM accounts WHERE user_id = ? AND seq > ?
+			UNION ALL
+			SELECT 'relation' AS kind, id, seq FROM relations WHERE user_id = ? AND seq > ?
 		) ORDER BY seq ASC LIMIT ?`,
-		userID, sinceSeq, userID, sinceSeq, limit)
+		userID, sinceSeq, userID, sinceSeq, userID, sinceSeq, userID, sinceSeq, limit)
 	if err != nil {
-		return nil, nil, 0, false, err
+		return nil, nil, nil, nil, 0, false, err
 	}
 
 	refs := make([]recordRef, 0, limit)
@@ -534,7 +761,7 @@ func (s *SQLiteStore) PullRecords(ctx context.Context, userID string, sinceSeq i
 		var ref recordRef
 		if err := rows.Scan(&ref.kind, &ref.id, &ref.seq); err != nil {
 			rows.Close()
-			return nil, nil, 0, false, err
+			return nil, nil, nil, nil, 0, false, err
 		}
 		refs = append(refs, ref)
 		if ref.seq > maxSeq {
@@ -543,39 +770,57 @@ func (s *SQLiteStore) PullRecords(ctx context.Context, userID string, sinceSeq i
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, nil, 0, false, err
+		return nil, nil, nil, nil, 0, false, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, nil, 0, false, err
+		return nil, nil, nil, nil, 0, false, err
 	}
 
 	items := make([]*Item, 0, len(refs))
 	var groups []*Group
+	var accounts []*Account
+	var relations []*Relation
 	for _, ref := range refs {
 		if ref.kind == "item" {
 			item, err := s.GetItem(ctx, userID, ref.id)
 			if err != nil {
-				return nil, nil, 0, false, err
+				return nil, nil, nil, nil, 0, false, err
 			}
 			items = append(items, item)
 			continue
 		}
-		group, err := s.GetGroup(ctx, userID, ref.id)
-		if err != nil {
-			return nil, nil, 0, false, err
+		if ref.kind == "group" {
+			group, err := s.GetGroup(ctx, userID, ref.id)
+			if err != nil {
+				return nil, nil, nil, nil, 0, false, err
+			}
+			groups = append(groups, group)
+			continue
 		}
-		groups = append(groups, group)
+		if ref.kind == "account" {
+			account, err := s.GetAccount(ctx, userID, ref.id)
+			if err != nil {
+				return nil, nil, nil, nil, 0, false, err
+			}
+			accounts = append(accounts, account)
+			continue
+		}
+		relation, err := s.GetRelation(ctx, userID, ref.id)
+		if err != nil {
+			return nil, nil, nil, nil, 0, false, err
+		}
+		relations = append(relations, relation)
 	}
 
 	var vaultSeq int64
 	if err := s.db.QueryRowContext(ctx, `SELECT seq FROM vaults WHERE user_id = ?`, userID).Scan(&vaultSeq); err != nil {
-		return nil, nil, 0, false, err
+		return nil, nil, nil, nil, 0, false, err
 	}
 	hasMore := vaultSeq > maxSeq
-	return items, groups, maxSeq, hasMore, nil
+	return items, groups, accounts, relations, maxSeq, hasMore, nil
 }
 
-func (s *SQLiteStore) PushRecords(ctx context.Context, userID string, items []PushItemInput, groups []PushGroupInput) ([]AppliedResult, []ConflictResult, int64, error) {
+func (s *SQLiteStore) PushRecords(ctx context.Context, userID string, items []PushItemInput, groups []PushGroupInput, accounts []PushAccountInput, relations []PushRelationInput) ([]AppliedResult, []ConflictResult, int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, nil, 0, err
@@ -723,6 +968,123 @@ func (s *SQLiteStore) PushRecords(ctx context.Context, userID string, items []Pu
 		})
 	}
 
+	for _, input := range accounts {
+		var currentRev sql.NullInt64
+		var recordSeq sql.NullInt64
+		err := tx.QueryRowContext(ctx, `SELECT rev, seq FROM accounts WHERE user_id = ? AND id = ?`, userID, input.ID).Scan(&currentRev, &recordSeq)
+
+		isNew := err == sql.ErrNoRows
+		if err != nil && !isNew {
+			return nil, nil, 0, err
+		}
+
+		if isNew && input.ExpectedRev != nil {
+			conflicts = append(conflicts, ConflictResult{ID: input.ID, Kind: "account", CurrentRev: 0, CurrentSeq: 0})
+			continue
+		}
+
+		if !isNew {
+			if input.ExpectedRev == nil || *input.ExpectedRev != currentRev.Int64 {
+				account, _ := s.getAccountTx(ctx, tx, userID, input.ID)
+				conflicts = append(conflicts, ConflictResult{
+					ID:         input.ID,
+					Kind:       "account",
+					CurrentRev: currentRev.Int64,
+					CurrentSeq: recordSeq.Int64,
+					Current:    account,
+				})
+				continue
+			}
+		}
+
+		vaultSeq++
+		newRev := int64(1)
+		if !isNew {
+			newRev = currentRev.Int64 + 1
+		}
+
+		if isNew {
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO accounts (id, user_id, rev, seq, deleted, kind, platform, display_name, login_identifier,
+					login_identifier_hash, status, tags_json, metadata_json, secret_ciphertext, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				input.ID, userID, newRev, vaultSeq, boolToInt(input.Deleted), input.Kind, input.Platform,
+				input.DisplayName, nullString(input.LoginIdentifier), nullString(input.LoginIdentifierHash), input.Status,
+				input.TagsJSON, input.MetadataJSON, input.SecretCiphertext, now.Format(time.RFC3339), now.Format(time.RFC3339))
+		} else {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE accounts SET rev = ?, seq = ?, deleted = ?, kind = ?, platform = ?, display_name = ?,
+					login_identifier = ?, login_identifier_hash = ?, status = ?, tags_json = ?, metadata_json = ?,
+					secret_ciphertext = ?, updated_at = ?
+				WHERE user_id = ? AND id = ?`,
+				newRev, vaultSeq, boolToInt(input.Deleted), input.Kind, input.Platform, input.DisplayName,
+				nullString(input.LoginIdentifier), nullString(input.LoginIdentifierHash), input.Status, input.TagsJSON,
+				input.MetadataJSON, input.SecretCiphertext, now.Format(time.RFC3339), userID, input.ID)
+		}
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		applied = append(applied, AppliedResult{ID: input.ID, Kind: "account", Rev: newRev, Seq: vaultSeq})
+	}
+
+	for _, input := range relations {
+		var currentRev sql.NullInt64
+		var recordSeq sql.NullInt64
+		err := tx.QueryRowContext(ctx, `SELECT rev, seq FROM relations WHERE user_id = ? AND id = ?`, userID, input.ID).Scan(&currentRev, &recordSeq)
+
+		isNew := err == sql.ErrNoRows
+		if err != nil && !isNew {
+			return nil, nil, 0, err
+		}
+
+		if isNew && input.ExpectedRev != nil {
+			conflicts = append(conflicts, ConflictResult{ID: input.ID, Kind: "relation", CurrentRev: 0, CurrentSeq: 0})
+			continue
+		}
+
+		if !isNew {
+			if input.ExpectedRev == nil || *input.ExpectedRev != currentRev.Int64 {
+				relation, _ := s.getRelationTx(ctx, tx, userID, input.ID)
+				conflicts = append(conflicts, ConflictResult{
+					ID:         input.ID,
+					Kind:       "relation",
+					CurrentRev: currentRev.Int64,
+					CurrentSeq: recordSeq.Int64,
+					Current:    relation,
+				})
+				continue
+			}
+		}
+
+		vaultSeq++
+		newRev := int64(1)
+		if !isNew {
+			newRev = currentRev.Int64 + 1
+		}
+
+		if isNew {
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO relations (id, user_id, rev, seq, deleted, kind, from_kind, from_id, to_kind, to_id,
+					metadata_json, secret_ciphertext, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				input.ID, userID, newRev, vaultSeq, boolToInt(input.Deleted), input.Kind, input.FromKind,
+				input.FromID, input.ToKind, input.ToID, input.MetadataJSON, input.SecretCiphertext, now.Format(time.RFC3339), now.Format(time.RFC3339))
+		} else {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE relations SET rev = ?, seq = ?, deleted = ?, kind = ?, from_kind = ?, from_id = ?,
+					to_kind = ?, to_id = ?, metadata_json = ?, secret_ciphertext = ?, updated_at = ?
+				WHERE user_id = ? AND id = ?`,
+				newRev, vaultSeq, boolToInt(input.Deleted), input.Kind, input.FromKind, input.FromID,
+				input.ToKind, input.ToID, input.MetadataJSON, input.SecretCiphertext, now.Format(time.RFC3339), userID, input.ID)
+		}
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		applied = append(applied, AppliedResult{ID: input.ID, Kind: "relation", Rev: newRev, Seq: vaultSeq})
+	}
+
 	_, err = tx.ExecContext(ctx, `UPDATE vaults SET seq = ?, updated_at = ? WHERE user_id = ?`,
 		vaultSeq, now.Format(time.RFC3339), userID)
 	if err != nil {
@@ -770,6 +1132,60 @@ func (s *SQLiteStore) getGroupTx(ctx context.Context, tx *sql.Tx, userID, groupI
 	group.Deleted = intToBool(deleted)
 	group.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	return &group, nil
+}
+
+func (s *SQLiteStore) getAccountTx(ctx context.Context, tx *sql.Tx, userID, accountID string) (*Account, error) {
+	var account Account
+	var deleted int
+	var loginIdentifier, loginIdentifierHash sql.NullString
+	var tagsJSON, metadataJSON, secretCiphertext []byte
+	var createdAt, updatedAt string
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, user_id, rev, seq, deleted, kind, platform, display_name, login_identifier,
+			login_identifier_hash, status, tags_json, metadata_json, secret_ciphertext, created_at, updated_at
+		FROM accounts WHERE user_id = ? AND id = ?`, userID, accountID).Scan(
+		&account.ID, &account.UserID, &account.Rev, &account.Seq, &deleted, &account.Kind,
+		&account.Platform, &account.DisplayName, &loginIdentifier, &loginIdentifierHash,
+		&account.Status, &tagsJSON, &metadataJSON, &secretCiphertext, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	account.Deleted = intToBool(deleted)
+	if loginIdentifier.Valid {
+		account.LoginIdentifier = &loginIdentifier.String
+	}
+	if loginIdentifierHash.Valid {
+		account.LoginIdentifierHash = &loginIdentifierHash.String
+	}
+	account.TagsJSON = tagsJSON
+	account.MetadataJSON = metadataJSON
+	account.SecretCiphertext = secretCiphertext
+	account.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	account.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &account, nil
+}
+
+func (s *SQLiteStore) getRelationTx(ctx context.Context, tx *sql.Tx, userID, relationID string) (*Relation, error) {
+	var relation Relation
+	var deleted int
+	var metadataJSON, secretCiphertext []byte
+	var createdAt, updatedAt string
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, user_id, rev, seq, deleted, kind, from_kind, from_id, to_kind, to_id,
+			metadata_json, secret_ciphertext, created_at, updated_at
+		FROM relations WHERE user_id = ? AND id = ?`, userID, relationID).Scan(
+		&relation.ID, &relation.UserID, &relation.Rev, &relation.Seq, &deleted, &relation.Kind,
+		&relation.FromKind, &relation.FromID, &relation.ToKind, &relation.ToID,
+		&metadataJSON, &secretCiphertext, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	relation.Deleted = intToBool(deleted)
+	relation.MetadataJSON = metadataJSON
+	relation.SecretCiphertext = secretCiphertext
+	relation.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	relation.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &relation, nil
 }
 
 func (s *SQLiteStore) CreateAuditEntry(ctx context.Context, entry *AuditEntry) error {
@@ -848,8 +1264,12 @@ func (s *SQLiteStore) GetUserStats(ctx context.Context, userID string) (int, *ti
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT LENGTH(ciphertext) FROM items WHERE user_id = ? AND ciphertext IS NOT NULL
 		UNION ALL
-		SELECT LENGTH(ciphertext) FROM groups WHERE user_id = ? AND ciphertext IS NOT NULL`,
-		userID, userID)
+		SELECT LENGTH(ciphertext) FROM groups WHERE user_id = ? AND ciphertext IS NOT NULL
+		UNION ALL
+		SELECT LENGTH(secret_ciphertext) FROM accounts WHERE user_id = ? AND secret_ciphertext IS NOT NULL
+		UNION ALL
+		SELECT LENGTH(secret_ciphertext) FROM relations WHERE user_id = ? AND secret_ciphertext IS NOT NULL`,
+		userID, userID, userID, userID)
 	if err != nil {
 		return 0, nil, 0, err
 	}

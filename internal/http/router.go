@@ -20,7 +20,7 @@ import (
 
 const (
 	apiVersion    = "v1"
-	serverVersion = "0.1.3"
+	serverVersion = "0.2.0"
 )
 
 type RouterDeps struct {
@@ -64,6 +64,8 @@ func NewRouter(deps RouterDeps) http.Handler {
 		mux.Handle("POST /v1/sync/push", syncRL.middleware(http.HandlerFunc(h.handlePush)))
 		mux.Handle("GET /v1/sync/items/{itemId}", syncRL.middleware(http.HandlerFunc(h.handleGetItem)))
 		mux.Handle("GET /v1/sync/groups/{groupId}", syncRL.middleware(http.HandlerFunc(h.handleGetGroup)))
+		mux.Handle("GET /v1/sync/accounts/{accountId}", syncRL.middleware(http.HandlerFunc(h.handleGetAccount)))
+		mux.Handle("GET /v1/sync/relations/{relationId}", syncRL.middleware(http.HandlerFunc(h.handleGetRelation)))
 
 		mux.HandleFunc("GET /v1/admin/setup/status", h.handleAdminSetupStatus)
 		mux.Handle("POST /v1/admin/setup", authRL.middleware(http.HandlerFunc(h.handleAdminSetup)))
@@ -73,6 +75,8 @@ func NewRouter(deps RouterDeps) http.Handler {
 		mux.HandleFunc("POST /v1/admin/users/{userId}/disable", h.handleAdminDisableUser)
 		mux.HandleFunc("POST /v1/admin/users/{userId}/enable", h.handleAdminEnableUser)
 		mux.HandleFunc("GET /v1/admin/users/{userId}/devices", h.handleAdminListUserDevices)
+		mux.HandleFunc("GET /v1/admin/users/{userId}/accounts", h.handleAdminListUserAccounts)
+		mux.HandleFunc("GET /v1/admin/users/{userId}/relations", h.handleAdminListUserRelations)
 		mux.HandleFunc("DELETE /v1/admin/users/{userId}/devices/{deviceId}", h.handleAdminRevokeDevice)
 		mux.HandleFunc("GET /v1/admin/audit", h.handleAdminAudit)
 	} else {
@@ -149,6 +153,8 @@ var businessRoutes = []string{
 	"POST /v1/sync/push",
 	"GET /v1/sync/items/{itemId}",
 	"GET /v1/sync/groups/{groupId}",
+	"GET /v1/sync/accounts/{accountId}",
+	"GET /v1/sync/relations/{relationId}",
 
 	"GET /v1/admin/setup/status",
 	"POST /v1/admin/setup",
@@ -158,6 +164,8 @@ var businessRoutes = []string{
 	"POST /v1/admin/users/{userId}/disable",
 	"POST /v1/admin/users/{userId}/enable",
 	"GET /v1/admin/users/{userId}/devices",
+	"GET /v1/admin/users/{userId}/accounts",
+	"GET /v1/admin/users/{userId}/relations",
 	"DELETE /v1/admin/users/{userId}/devices/{deviceId}",
 	"GET /v1/admin/audit",
 }

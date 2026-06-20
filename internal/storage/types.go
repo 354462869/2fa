@@ -66,6 +66,44 @@ type Group struct {
 	UpdatedAt  time.Time
 }
 
+// Account represents server-visible account metadata plus encrypted secrets.
+type Account struct {
+	ID                  string
+	UserID              string
+	Rev                 int64
+	Seq                 int64
+	Deleted             bool
+	Kind                string
+	Platform            string
+	DisplayName         string
+	LoginIdentifier     *string
+	LoginIdentifierHash *string
+	Status              string
+	TagsJSON            []byte
+	MetadataJSON        []byte
+	SecretCiphertext    []byte // JSON-encoded RecordCipher for sensitive account data
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// Relation represents a server-visible relationship between two records.
+type Relation struct {
+	ID               string
+	UserID           string
+	Rev              int64
+	Seq              int64
+	Deleted          bool
+	Kind             string
+	FromKind         string
+	FromID           string
+	ToKind           string
+	ToID             string
+	MetadataJSON     []byte
+	SecretCiphertext []byte // JSON-encoded RecordCipher for sensitive relation data
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 // AuditEntry represents a logged action for audit trail.
 type AuditEntry struct {
 	ID         string
@@ -97,13 +135,43 @@ type PushGroupInput struct {
 	Ciphertext  []byte
 }
 
+// PushAccountInput represents an account metadata write request.
+type PushAccountInput struct {
+	ID                  string
+	Deleted             bool
+	Kind                string
+	Platform            string
+	DisplayName         string
+	LoginIdentifier     *string
+	LoginIdentifierHash *string
+	Status              string
+	TagsJSON            []byte
+	MetadataJSON        []byte
+	ExpectedRev         *int64
+	SecretCiphertext    []byte
+}
+
+// PushRelationInput represents a relation metadata write request.
+type PushRelationInput struct {
+	ID               string
+	Deleted          bool
+	Kind             string
+	FromKind         string
+	FromID           string
+	ToKind           string
+	ToID             string
+	MetadataJSON     []byte
+	ExpectedRev      *int64
+	SecretCiphertext []byte
+}
+
 // ConflictResult represents a rejected write due to stale rev.
 type ConflictResult struct {
 	ID         string
-	Kind       string // "item" or "group"
+	Kind       string // "item", "group", "account", or "relation"
 	CurrentRev int64
 	CurrentSeq int64
-	Current    interface{} // *Item or *Group
+	Current    interface{} // *Item, *Group, *Account, or *Relation
 }
 
 // AppliedResult represents a successful write.

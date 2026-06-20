@@ -471,7 +471,7 @@ func (h *handlers) handlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, groups, nextSeq, hasMore, err := h.sync.Pull(r.Context(), user.ID, req.SinceSeq, limit)
+	items, groups, accounts, relations, nextSeq, hasMore, err := h.sync.Pull(r.Context(), user.ID, req.SinceSeq, limit)
 	if err != nil {
 		h.logger.Error("pull failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to pull")
@@ -479,16 +479,24 @@ func (h *handlers) handlePull(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := PullResponse{
-		Items:   make([]ItemResponse, 0, len(items)),
-		Groups:  make([]GroupResponse, 0, len(groups)),
-		NextSeq: nextSeq,
-		HasMore: hasMore,
+		Items:     make([]ItemResponse, 0, len(items)),
+		Groups:    make([]GroupResponse, 0, len(groups)),
+		Accounts:  make([]AccountResponse, 0, len(accounts)),
+		Relations: make([]RelationResponse, 0, len(relations)),
+		NextSeq:   nextSeq,
+		HasMore:   hasMore,
 	}
 	for _, item := range items {
 		resp.Items = append(resp.Items, itemToResponse(item))
 	}
 	for _, group := range groups {
 		resp.Groups = append(resp.Groups, groupToResponse(group))
+	}
+	for _, account := range accounts {
+		resp.Accounts = append(resp.Accounts, accountToResponse(account))
+	}
+	for _, relation := range relations {
+		resp.Relations = append(resp.Relations, relationToResponse(relation))
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -564,7 +572,75 @@ func (h *handlers) handlePush(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	applied, conflicts, nextSeq, err := h.sync.Push(r.Context(), user.ID, itemInputs, groupInputs)
+	accountInputs := make([]storage.PushAccountInput, 0, len(req.Accounts))
+	for _, account := range req.Accounts {
+		if !account.Deleted && account.SecretCiphertext == nil {
+			writeError(w, http.StatusBadRequest, "invalid_account", "Non-deleted account requires secret_ciphertext")
+			return
+		}
+		var secretBytes []byte
+		if account.SecretCiphertext != nil {
+			b, _ := json.Marshal(account.SecretCiphertext)
+			secretBytes = b
+		}
+		accountInputs = append(accountInputs, storage.PushAccountInput{
+			ID:                  account.ID,
+			Deleted:             account.Deleted,
+			Kind:                account.Kind,
+			Platform:            account.Platform,
+			DisplayName:         account.DisplayName,
+			LoginIdentifier:     account.LoginIdentifier,
+			LoginIdentifierHash: account.LoginIdentifierHash,
+			Status:              account.Status,
+			TagsJSON:            []byte(account.TagsJSON),
+			MetadataJSON:        []byte(account.MetadataJSON),
+			ExpectedRev:         account.ExpectedRev,
+			SecretCiphertext:    secretBytes,
+		})
+	}
+
+	relationInputs := make([]storage.PushRelationInput, 0, len(req.Relations))
+	for _, relation := range req.Relations {
+		var secretBytes []byte
+		if relation.SecretCiphertext != nil {
+			b, _ := json.Marshal(relation.SecretCiphertext)
+			secretBytes = b
+		}
+		kind := relation.Kind
+		if kind == "" {
+			kind = relation.RelationType
+		}
+		fromKind := relation.FromKind
+		fromID := relation.FromID
+		if fromID == "" && relation.FromAccountID != "" {
+			fromID = relation.FromAccountID
+			if fromKind == "" {
+				fromKind = "account"
+			}
+		}
+		toKind := relation.ToKind
+		toID := relation.ToID
+		if toID == "" && relation.ToAccountID != "" {
+			toID = relation.ToAccountID
+			if toKind == "" {
+				toKind = "account"
+			}
+		}
+		relationInputs = append(relationInputs, storage.PushRelationInput{
+			ID:               relation.ID,
+			Deleted:          relation.Deleted,
+			Kind:             kind,
+			FromKind:         fromKind,
+			FromID:           fromID,
+			ToKind:           toKind,
+			ToID:             toID,
+			MetadataJSON:     []byte(relation.MetadataJSON),
+			ExpectedRev:      relation.ExpectedRev,
+			SecretCiphertext: secretBytes,
+		})
+	}
+
+	applied, conflicts, nextSeq, err := h.sync.Push(r.Context(), user.ID, itemInputs, groupInputs, accountInputs, relationInputs)
 	if err != nil {
 		h.logger.Error("push failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to push")
@@ -600,6 +676,16 @@ func (h *handlers) handlePush(w http.ResponseWriter, r *http.Request) {
 			if g, ok := c.Current.(*storage.Group); ok && g != nil {
 				resp := groupToResponse(g)
 				cr.CurrentGroup = &resp
+			}
+		} else if c.Kind == "account" {
+			if a, ok := c.Current.(*storage.Account); ok && a != nil {
+				resp := accountToResponse(a)
+				cr.CurrentAccount = &resp
+			}
+		} else if c.Kind == "relation" {
+			if rel, ok := c.Current.(*storage.Relation); ok && rel != nil {
+				resp := relationToResponse(rel)
+				cr.CurrentRelation = &resp
 			}
 		}
 		resp.Conflicts = append(resp.Conflicts, cr)
@@ -664,6 +750,60 @@ func (h *handlers) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, groupToResponse(group))
+}
+
+func (h *handlers) handleGetAccount(w http.ResponseWriter, r *http.Request) {
+	user, _, err := h.requireAuth(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		return
+	}
+
+	if user.Disabled {
+		writeError(w, http.StatusForbidden, "auth.user_disabled", "Account is disabled")
+		return
+	}
+
+	accountID := r.PathValue("accountId")
+	account, err := h.sync.GetAccount(r.Context(), user.ID, accountID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "account.not_found", "Account not found")
+			return
+		}
+		h.logger.Error("get account failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get account")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, accountToResponse(account))
+}
+
+func (h *handlers) handleGetRelation(w http.ResponseWriter, r *http.Request) {
+	user, _, err := h.requireAuth(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		return
+	}
+
+	if user.Disabled {
+		writeError(w, http.StatusForbidden, "auth.user_disabled", "Account is disabled")
+		return
+	}
+
+	relationID := r.PathValue("relationId")
+	relation, err := h.sync.GetRelation(r.Context(), user.ID, relationID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "relation.not_found", "Relation not found")
+			return
+		}
+		h.logger.Error("get relation failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get relation")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, relationToResponse(relation))
 }
 
 func (h *handlers) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
@@ -973,6 +1113,66 @@ func (h *handlers) handleAdminListUserDevices(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"devices": resp})
 }
 
+func (h *handlers) handleAdminListUserAccounts(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.requireAdmin(r); err != nil {
+		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		return
+	}
+
+	userID := r.PathValue("userId")
+	if _, err := h.store.GetUserByID(r.Context(), userID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "user.not_found", "User not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list accounts")
+		return
+	}
+
+	accounts, err := h.store.ListAccountsByUser(r.Context(), userID)
+	if err != nil {
+		h.logger.Error("admin list user accounts failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list accounts")
+		return
+	}
+
+	resp := AdminAccountPage{Accounts: make([]AdminAccount, 0, len(accounts))}
+	for _, account := range accounts {
+		resp.Accounts = append(resp.Accounts, accountToAdmin(account))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *handlers) handleAdminListUserRelations(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.requireAdmin(r); err != nil {
+		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		return
+	}
+
+	userID := r.PathValue("userId")
+	if _, err := h.store.GetUserByID(r.Context(), userID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "user.not_found", "User not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list relations")
+		return
+	}
+
+	relations, err := h.store.ListRelationsByUser(r.Context(), userID)
+	if err != nil {
+		h.logger.Error("admin list user relations failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list relations")
+		return
+	}
+
+	resp := AdminRelationPage{Relations: make([]AdminRelation, 0, len(relations))}
+	for _, relation := range relations {
+		resp.Relations = append(resp.Relations, relationToAdmin(relation))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *handlers) handleAdminRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	admin, err := h.requireAdmin(r)
 	if err != nil {
@@ -1183,6 +1383,111 @@ func groupToResponse(group *storage.Group) GroupResponse {
 		if err := json.Unmarshal(group.Ciphertext, &ct); err == nil {
 			resp.Ciphertext = &ct
 		}
+	}
+	return resp
+}
+
+func accountToResponse(account *storage.Account) AccountResponse {
+	resp := AccountResponse{
+		ID:                  account.ID,
+		Rev:                 account.Rev,
+		Seq:                 account.Seq,
+		Deleted:             account.Deleted,
+		Kind:                account.Kind,
+		Platform:            account.Platform,
+		DisplayName:         account.DisplayName,
+		LoginIdentifier:     account.LoginIdentifier,
+		LoginIdentifierHash: account.LoginIdentifierHash,
+		Status:              account.Status,
+		TagsJSON:            json.RawMessage(account.TagsJSON),
+		MetadataJSON:        json.RawMessage(account.MetadataJSON),
+		CreatedAt:           account.CreatedAt,
+		UpdatedAt:           account.UpdatedAt,
+	}
+	if !account.Deleted && len(account.SecretCiphertext) > 0 {
+		var ct RecordCipher
+		if err := json.Unmarshal(account.SecretCiphertext, &ct); err == nil {
+			resp.SecretCiphertext = &ct
+		}
+	}
+	return resp
+}
+
+func relationToResponse(relation *storage.Relation) RelationResponse {
+	resp := RelationResponse{
+		ID:           relation.ID,
+		Rev:          relation.Rev,
+		Seq:          relation.Seq,
+		Deleted:      relation.Deleted,
+		Kind:         relation.Kind,
+		FromKind:     relation.FromKind,
+		FromID:       relation.FromID,
+		ToKind:       relation.ToKind,
+		ToID:         relation.ToID,
+		RelationType: relation.Kind,
+		MetadataJSON: json.RawMessage(relation.MetadataJSON),
+		CreatedAt:    relation.CreatedAt,
+		UpdatedAt:    relation.UpdatedAt,
+	}
+	if relation.FromKind == "account" && relation.FromID != "" {
+		v := relation.FromID
+		resp.FromAccountID = &v
+	}
+	if relation.ToKind == "account" && relation.ToID != "" {
+		v := relation.ToID
+		resp.ToAccountID = &v
+	}
+	if !relation.Deleted && len(relation.SecretCiphertext) > 0 {
+		var ct RecordCipher
+		if err := json.Unmarshal(relation.SecretCiphertext, &ct); err == nil {
+			resp.SecretCiphertext = &ct
+		}
+	}
+	return resp
+}
+
+func accountToAdmin(account *storage.Account) AdminAccount {
+	return AdminAccount{
+		ID:                  account.ID,
+		Rev:                 account.Rev,
+		Seq:                 account.Seq,
+		Deleted:             account.Deleted,
+		Kind:                account.Kind,
+		Platform:            account.Platform,
+		DisplayName:         account.DisplayName,
+		LoginIdentifier:     account.LoginIdentifier,
+		LoginIdentifierHash: account.LoginIdentifierHash,
+		Status:              account.Status,
+		TagsJSON:            json.RawMessage(account.TagsJSON),
+		MetadataJSON:        json.RawMessage(account.MetadataJSON),
+		CreatedAt:           account.CreatedAt,
+		UpdatedAt:           account.UpdatedAt,
+	}
+}
+
+func relationToAdmin(relation *storage.Relation) AdminRelation {
+	resp := AdminRelation{
+		ID:           relation.ID,
+		Rev:          relation.Rev,
+		Seq:          relation.Seq,
+		Deleted:      relation.Deleted,
+		Kind:         relation.Kind,
+		FromKind:     relation.FromKind,
+		FromID:       relation.FromID,
+		ToKind:       relation.ToKind,
+		ToID:         relation.ToID,
+		RelationType: relation.Kind,
+		MetadataJSON: json.RawMessage(relation.MetadataJSON),
+		CreatedAt:    relation.CreatedAt,
+		UpdatedAt:    relation.UpdatedAt,
+	}
+	if relation.FromKind == "account" && relation.FromID != "" {
+		v := relation.FromID
+		resp.FromAccountID = &v
+	}
+	if relation.ToKind == "account" && relation.ToID != "" {
+		v := relation.ToID
+		resp.ToAccountID = &v
 	}
 	return resp
 }
