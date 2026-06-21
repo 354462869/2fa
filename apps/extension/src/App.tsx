@@ -17,7 +17,8 @@ import {
   ChevronDown,
   ChevronRight,
   Apple,
-  Link
+  Link,
+  Smartphone
 } from 'lucide-react';
 import { ApiClient } from '@2fa/api-client';
 import type { Item, Group, VaultEnvelope } from '@2fa/api-types';
@@ -58,7 +59,7 @@ interface PlaintextItem {
 }
 
 interface AccountNotes {
-  type?: 'google' | 'gpt' | 'email' | 'proxy' | 'site';
+  type?: AccountKind;
   password?: string;
   phone?: string;
   proxy?: string;
@@ -66,18 +67,150 @@ interface AccountNotes {
   notes?: string;
 }
 
+type AccountKind = 'google' | 'gpt' | 'email' | 'proxy' | 'site';
+type CopyKind = 'account' | 'password' | 'phone' | 'totp' | 'proxy';
+
+const ACCOUNT_TYPE_SORT_ORDER: Record<AccountKind, number> = {
+  google: 0,
+  gpt: 1,
+  email: 2,
+  proxy: 3,
+  site: 4
+};
+
+const ACCOUNT_TYPE_STYLES: Record<AccountKind, {
+  label: string;
+  cardClass: string;
+  badgeClass: string;
+  iconClass: string;
+}> = {
+  google: {
+    label: 'Google',
+    cardClass: 'bg-blue-950/45 border-blue-500/30 hover:border-blue-400/60 hover:bg-blue-950/60 shadow-blue-950/20',
+    badgeClass: 'bg-blue-500/15 text-blue-300 border-blue-400/30',
+    iconClass: 'text-blue-300'
+  },
+  gpt: {
+    label: 'GPT',
+    cardClass: 'bg-emerald-950/45 border-emerald-500/30 hover:border-emerald-400/60 hover:bg-emerald-950/60 shadow-emerald-950/20',
+    badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30',
+    iconClass: 'text-emerald-300'
+  },
+  email: {
+    label: '邮箱',
+    cardClass: 'bg-violet-950/40 border-violet-500/30 hover:border-violet-400/60 hover:bg-violet-950/55 shadow-violet-950/20',
+    badgeClass: 'bg-violet-500/15 text-violet-300 border-violet-400/30',
+    iconClass: 'text-violet-300'
+  },
+  proxy: {
+    label: '代理',
+    cardClass: 'bg-amber-950/35 border-amber-500/30 hover:border-amber-400/60 hover:bg-amber-950/50 shadow-amber-950/20',
+    badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-400/30',
+    iconClass: 'text-amber-300'
+  },
+  site: {
+    label: '常规',
+    cardClass: 'bg-slate-900/55 border-slate-700/70 hover:border-slate-500/70 hover:bg-slate-900/70 shadow-slate-950/20',
+    badgeClass: 'bg-slate-500/15 text-slate-300 border-slate-400/20',
+    iconClass: 'text-slate-300'
+  }
+};
+
+type GroupColorStyle = {
+  label: string;
+  headerClass: string;
+  chipClass: string;
+  swatchClass: string;
+  folderClass: string;
+};
+
+const GROUP_COLOR_STYLES = {
+  cyan: {
+    label: '青蓝',
+    headerClass: 'bg-cyan-950/45 hover:bg-cyan-950/60 border-cyan-500/25',
+    chipClass: 'text-cyan-200 bg-cyan-400/15',
+    swatchClass: 'bg-cyan-400',
+    folderClass: 'text-cyan-300'
+  },
+  blue: {
+    label: '蓝色',
+    headerClass: 'bg-blue-950/45 hover:bg-blue-950/60 border-blue-500/25',
+    chipClass: 'text-blue-200 bg-blue-400/15',
+    swatchClass: 'bg-blue-400',
+    folderClass: 'text-blue-300'
+  },
+  emerald: {
+    label: '绿色',
+    headerClass: 'bg-emerald-950/45 hover:bg-emerald-950/60 border-emerald-500/25',
+    chipClass: 'text-emerald-200 bg-emerald-400/15',
+    swatchClass: 'bg-emerald-400',
+    folderClass: 'text-emerald-300'
+  },
+  amber: {
+    label: '琥珀',
+    headerClass: 'bg-amber-950/45 hover:bg-amber-950/60 border-amber-500/25',
+    chipClass: 'text-amber-200 bg-amber-400/15',
+    swatchClass: 'bg-amber-400',
+    folderClass: 'text-amber-300'
+  },
+  rose: {
+    label: '玫红',
+    headerClass: 'bg-rose-950/45 hover:bg-rose-950/60 border-rose-500/25',
+    chipClass: 'text-rose-200 bg-rose-400/15',
+    swatchClass: 'bg-rose-400',
+    folderClass: 'text-rose-300'
+  },
+  violet: {
+    label: '紫色',
+    headerClass: 'bg-violet-950/45 hover:bg-violet-950/60 border-violet-500/25',
+    chipClass: 'text-violet-200 bg-violet-400/15',
+    swatchClass: 'bg-violet-400',
+    folderClass: 'text-violet-300'
+  },
+  slate: {
+    label: '默认',
+    headerClass: 'bg-slate-900/50 hover:bg-slate-900/70 border-slate-700/50',
+    chipClass: 'text-slate-200 bg-slate-500/15',
+    swatchClass: 'bg-slate-500',
+    folderClass: 'text-slate-300'
+  }
+} satisfies Record<string, GroupColorStyle>;
+
+type GroupColorKey = keyof typeof GROUP_COLOR_STYLES;
+
 function parseNotes(notesStr?: string): AccountNotes {
   if (!notesStr) return {};
   try {
     const parsed = JSON.parse(notesStr);
     if (parsed && typeof parsed === 'object' && 'vault_v1' in parsed) {
-      return parsed.vault_v1 || {};
+      return normalizeAccountNotes(parsed.vault_v1);
     }
   } catch {
     return parseLegacyNotes(notesStr);
   }
 
   return parseLegacyNotes(notesStr);
+}
+
+function isAccountKind(value: unknown): value is AccountKind {
+  return value === 'google'
+    || value === 'gpt'
+    || value === 'email'
+    || value === 'proxy'
+    || value === 'site';
+}
+
+function normalizeAccountNotes(value: unknown): AccountNotes {
+  if (!isRecord(value)) return {};
+
+  const info: AccountNotes = {};
+  if (isAccountKind(value.type)) info.type = value.type;
+  if (typeof value.password === 'string') info.password = value.password;
+  if (typeof value.phone === 'string') info.phone = value.phone;
+  if (typeof value.proxy === 'string') info.proxy = value.proxy;
+  if (typeof value.bound_google === 'string') info.bound_google = value.bound_google;
+  if (typeof value.notes === 'string') info.notes = value.notes;
+  return info;
 }
 
 function parseLegacyNotes(notesStr: string): AccountNotes {
@@ -112,7 +245,7 @@ function stringifyNotes(info: AccountNotes): string {
   });
 }
 
-function inferType(issuer: string, account: string): 'google' | 'gpt' | 'email' | 'proxy' | 'site' {
+function inferType(issuer: string, account: string): AccountKind {
   const name = (issuer + ' ' + account).toLowerCase();
   if (name.includes('google') || name.includes('gmail')) return 'google';
   if (name.includes('gpt') || name.includes('openai') || name.includes('chatgpt')) return 'gpt';
@@ -121,57 +254,78 @@ function inferType(issuer: string, account: string): 'google' | 'gpt' | 'email' 
   return 'site';
 }
 
-function getAccountType(item: PlaintextItem): 'google' | 'gpt' | 'email' | 'proxy' | 'site' {
+function getAccountType(item: PlaintextItem): AccountKind {
   const info = parseNotes(item.notes);
   if (info.type) return info.type;
   return inferType(item.issuer, item.account);
 }
 
-function getRelationHint(item: PlaintextItem, info: AccountNotes): string | null {
-  if (info.bound_google) {
-    return `关联谷歌: ${info.bound_google}`;
-  }
-  if (info.phone) {
-    return `关联手机: ${info.phone}`;
-  }
-  if (info.proxy) {
-    return `使用代理: ${info.proxy}`;
-  }
-  if ((info.type === 'gpt' || inferType(item.issuer, item.account) === 'gpt') && item.account.toLowerCase().includes('@gmail.com')) {
-    return `使用 Google 登录: ${item.account}`;
-  }
-  return null;
+function getItemSortTime(item: PlaintextItem): number {
+  const time = Date.parse(item.updated_at);
+  return Number.isNaN(time) ? 0 : time;
 }
 
-function getStatusChips(item: PlaintextItem, info: AccountNotes) {
-  const chips: Array<{ text: string; bg: string }> = [];
+function compareAccountItems(a: PlaintextItem, b: PlaintextItem): number {
+  const typeDiff = ACCOUNT_TYPE_SORT_ORDER[getAccountType(a)] - ACCOUNT_TYPE_SORT_ORDER[getAccountType(b)];
+  if (typeDiff !== 0) return typeDiff;
 
-  const type = info.type || inferType(item.issuer, item.account);
-  if (type === 'google') chips.push({ text: 'Google', bg: 'bg-blue-500/15 text-blue-400 border border-blue-500/20' });
-  else if (type === 'gpt') chips.push({ text: 'GPT', bg: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20' });
-  else if (type === 'email') chips.push({ text: '邮箱', bg: 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/20' });
-  else if (type === 'proxy') chips.push({ text: '代理', bg: 'bg-amber-500/15 text-amber-400 border border-amber-500/20' });
-  else chips.push({ text: '常规', bg: 'bg-slate-500/15 text-slate-400 border border-slate-500/20' });
+  const timeDiff = getItemSortTime(b) - getItemSortTime(a);
+  if (timeDiff !== 0) return timeDiff;
 
-  if (item.secret) {
-    chips.push({ text: '2FA', bg: 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/20' });
-  } else {
-    chips.push({ text: '无2FA', bg: 'bg-rose-500/15 text-rose-400 border border-rose-500/20' });
+  return (a.account || a.issuer || a.id).localeCompare(b.account || b.issuer || b.id);
+}
+
+function maskPhone(phone?: string): string {
+  if (!phone) return '';
+  const p = phone.trim();
+  if (p.length <= 4) return p;
+  if (p.length <= 7) return p.slice(0, 2) + '***' + p.slice(-2);
+  return p.slice(0, 3) + '****' + p.slice(-4);
+}
+
+function displayProxyHost(proxy?: string): string {
+  if (!proxy) return '';
+  const raw = proxy.trim();
+  if (!raw) return '';
+
+  try {
+    const parsed = new URL(raw.includes('://') ? raw : `http://${raw}`);
+    return parsed.hostname || raw;
+  } catch {
+    const withoutAuth = raw.split('@').pop() || raw;
+    const withoutProtocol = withoutAuth.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    const hostPort = withoutProtocol.split(/[/?#]/)[0] || withoutProtocol;
+    if (hostPort.startsWith('[')) {
+      const endIdx = hostPort.indexOf(']');
+      return endIdx > 1 ? hostPort.slice(1, endIdx) : hostPort;
+    }
+    return hostPort.split(':')[0] || hostPort;
   }
+}
 
-  if (info.password) {
-    chips.push({ text: '密码', bg: 'bg-teal-500/15 text-teal-300 border border-teal-500/20' });
+function get2FaColor(itemType: AccountKind, secondsRemaining: number): string {
+  if (secondsRemaining < 5) return 'text-rose-500';
+  switch (itemType) {
+    case 'google': return 'text-blue-400';
+    case 'gpt': return 'text-emerald-400';
+    case 'email': return 'text-violet-400';
+    case 'proxy': return 'text-amber-400';
+    default: return 'text-slate-300';
   }
+}
 
-  if (info.phone) {
-    chips.push({ text: '绑定手机', bg: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/20' });
-  }
+function getGroupColorKey(group: PlaintextGroup | null, fallbackSeed: string): GroupColorKey {
+  if (group?.color && group.color in GROUP_COLOR_STYLES) return group.color as GroupColorKey;
+  if (group?.name.includes('公司')) return 'blue';
+  if (group === null) return 'slate';
 
-  if (info.proxy) {
-    chips.push({ text: '使用代理', bg: 'bg-amber-500/15 text-amber-300 border border-amber-500/20' });
-  }
+  const keys = (Object.keys(GROUP_COLOR_STYLES) as GroupColorKey[]).filter((key) => key !== 'slate');
+  const codeSum = fallbackSeed.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return keys[codeSum % keys.length] || 'slate';
+}
 
-  return chips;
+function getGroupTheme(colorKey: GroupColorKey): GroupColorStyle {
+  return GROUP_COLOR_STYLES[colorKey];
 }
 
 interface PlaintextGroup {
@@ -336,7 +490,7 @@ export default function App() {
   const [totpCodes, setTotpCodes] = useState<Record<string, string>>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const [accountType, setAccountType] = useState<'google' | 'gpt' | 'email' | 'proxy' | 'site'>('site');
+  const [accountType, setAccountType] = useState<AccountKind>('site');
   const [password, setPassword] = useState('');
   const [boundPhone, setBoundPhone] = useState('');
   const [boundProxy, setBoundProxy] = useState('');
@@ -354,6 +508,8 @@ export default function App() {
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState<PlaintextGroup | null>(null);
   const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupColor, setNewGroupColor] = useState<GroupColorKey>('cyan');
+  const [pendingDeleteItemId, setPendingDeleteItemId] = useState<string | null>(null);
 
   const [remoteServer, setRemoteServer] = useState('');
   const [remoteUsername, setRemoteUsername] = useState('');
@@ -376,6 +532,9 @@ export default function App() {
   const [qrPreviewSrc, setQrPreviewSrc] = useState('');
   const [isScanningTab, setIsScanningTab] = useState(false);
   const syncInFlightRef = useRef(false);
+  const pendingDeleteItem = pendingDeleteItemId
+    ? decryptedItems.find((item) => item.id === pendingDeleteItemId) || null
+    : null;
 
   useEffect(() => {
     checkExtensionState();
@@ -416,7 +575,7 @@ export default function App() {
 
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({ type: 'GET_STATE' }, async (response) => {
-        if (response && response.isUnlocked) {
+        if (response && response.isUnlocked && typeof response.syncPassword === 'string') {
           await handleUnlocked(response.syncPassword);
         } else {
           setIsInitialized(true);
@@ -645,9 +804,14 @@ export default function App() {
             autoLockMinutes,
             requireSyncPassword
           }
-        }, () => {
-          setIsUnlocked(true);
-          loadAndDecryptVault();
+        }, async (response) => {
+          if (response && response.success) {
+            setIsUnlocked(true);
+            await loadAndDecryptVault();
+          } else {
+            dekRef.current = null;
+            setErrorMessage('同步密码保存失败，请重试初始化。');
+          }
         });
       } else {
         setIsUnlocked(true);
@@ -707,56 +871,16 @@ export default function App() {
     }
   };
 
-  const handleCopy = (id: string, value: string, type: 'account' | 'password' | 'totp') => {
-    navigator.clipboard.writeText(value);
-    const key = `${id}:${type}`;
-    setCopiedKey(key);
-    setTimeout(() => {
-      setCopiedKey((current) => current === key ? null : current);
-    }, 1500);
-  };
-
-  const handleAutofill = (item: PlaintextItem, info: AccountNotes) => {
-    setErrorMessage(null);
-    setSuccessMessage(null);
-    if (typeof chrome === 'undefined' || !chrome.tabs) {
-      setErrorMessage('chrome.tabs API 不可用');
-      return;
-    }
+  const handleCopy = async (id: string, value: string, type: CopyKind) => {
     try {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        const activeTab = tabs[0];
-        if (!activeTab || !activeTab.id) {
-          setErrorMessage('未找到活动标签页，请确保在网页中操作。');
-          return;
-        }
-
-        chrome.tabs.sendMessage(
-          activeTab.id,
-          {
-            type: 'FILL_CREDENTIALS',
-            payload: {
-              username: item.account || '',
-              password: info.password || ''
-            }
-          },
-          (response) => {
-            if (chrome.runtime.lastError) {
-              setErrorMessage('自动填充失败：未能在当前页面加载脚本。请刷新页面后重试。');
-              return;
-            }
-            if (response && response.success) {
-              setSuccessMessage('账号密码已成功填充到当前页面！');
-              setTimeout(() => setSuccessMessage(null), 3000);
-            } else {
-              setErrorMessage('未能在当前页面找到匹配的输入框。');
-              setTimeout(() => setErrorMessage(null), 3000);
-            }
-          }
-        );
-      });
+      await navigator.clipboard.writeText(value);
+      const key = `${id}:${type}`;
+      setCopiedKey(key);
+      setTimeout(() => {
+        setCopiedKey((current) => current === key ? null : current);
+      }, 1500);
     } catch (err) {
-      setErrorMessage(getErrorMessage(err, '自动填充时出错'));
+      setErrorMessage(getErrorMessage(err, '复制失败，请检查浏览器剪贴板权限'));
       setTimeout(() => setErrorMessage(null), 3000);
     }
   };
@@ -1002,15 +1126,16 @@ export default function App() {
     }
   };
 
-  const handleDeleteItem = async (id: string) => {
+  const handleDeleteItem = (id: string) => {
+    setPendingDeleteItemId(id);
+  };
+
+  const confirmDeleteItem = async (syncDelete: boolean) => {
+    const id = pendingDeleteItemId;
+    if (!id) return;
     const item = items.find((i) => i.id === id);
+    setPendingDeleteItemId(null);
     if (!item) return;
-
-    const syncDelete = remoteConfig
-      ? confirm('是否同步删除到线上？选择“取消”将只从本地删除。')
-      : false;
-
-    if (!syncDelete && !confirm('仅从本地删除此项目？下次同步可能会从服务端重新下载。')) return;
 
     if (syncDelete) {
       const deletedItem: Item = {
@@ -1040,7 +1165,7 @@ export default function App() {
       const groupPlaintext = JSON.stringify({
         name: newGroupName,
         description: '',
-        color: '',
+        color: newGroupColor,
         icon: ''
       });
 
@@ -1063,6 +1188,7 @@ export default function App() {
       setShowGroupModal(false);
       setEditingGroup(null);
       setNewGroupName('');
+      setNewGroupColor('cyan');
     } catch (err: unknown) {
       setErrorMessage(getErrorMessage(err, '保存分组失败'));
     }
@@ -1218,10 +1344,7 @@ export default function App() {
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSuccessMessage(null);
-    await localStore.set({
-      autoLockMinutes,
-      requireSyncPasswordEachSession: requireSyncPassword
-    });
+    setErrorMessage(null);
 
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({
@@ -1231,10 +1354,18 @@ export default function App() {
           autoLockMinutes,
           requireSyncPassword
         }
-      }, () => {
-        setSuccessMessage('设置保存成功！');
+      }, (response) => {
+        if (response && response.success) {
+          setSuccessMessage('设置保存成功！');
+        } else {
+          setErrorMessage('设置保存失败，请重新解锁后再试。');
+        }
       });
     } else {
+      await localStore.set({
+        autoLockMinutes,
+        requireSyncPasswordEachSession: requireSyncPassword
+      });
       setSuccessMessage('设置保存成功！');
     }
   };
@@ -1596,7 +1727,7 @@ export default function App() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-2">
                   {(() => {
                     const groupsMap = filteredItems.reduce<Record<string, PlaintextItem[]>>((acc, item) => {
                       const gid = item.group_id || 'ungrouped';
@@ -1617,14 +1748,16 @@ export default function App() {
                     });
 
                     return sortedGroupIds.map((gid) => {
-                      const itemsInGroup = groupsMap[gid] || [];
+                      const itemsInGroup = [...(groupsMap[gid] || [])].sort(compareAccountItems);
                       const isUngrouped = gid === 'ungrouped';
                       const group = isUngrouped ? null : decryptedGroups.find((g) => g.id === gid);
                       const groupName = group ? group.name : '未分组';
                       const isCollapsed = collapsedGroups[gid] || false;
+                      const groupColorKey = getGroupColorKey(group || null, gid);
+                      const groupTheme = getGroupTheme(groupColorKey);
 
                       return (
-                        <div key={gid} className="space-y-2">
+                        <div key={gid} className="space-y-1">
                           <div
                             onClick={() =>
                               setCollapsedGroups((prev) => ({
@@ -1632,12 +1765,12 @@ export default function App() {
                                 [gid]: !prev[gid]
                               }))
                             }
-                            className="flex items-center justify-between py-1.5 px-3 bg-slate-900/40 hover:bg-slate-900/60 rounded-xl cursor-pointer transition-all border border-slate-800/40 select-none"
+                            className={`flex items-center justify-between py-1.5 px-3 rounded-xl cursor-pointer transition-all border select-none ${groupTheme.headerClass}`}
                           >
                             <div className="flex items-center gap-2">
-                              <Folder className="w-3.5 h-3.5 text-cyan-400" />
+                              <Folder className={`w-3.5 h-3.5 ${groupTheme.folderClass}`} />
                               <span className="text-xs font-semibold text-slate-300">{groupName}</span>
-                              <span className="text-[10px] text-cyan-400 bg-cyan-500/10 px-2 py-0.2 rounded-full font-mono font-medium">
+                              <span className={`text-[10px] px-2 py-0.2 rounded-full font-mono font-medium ${groupTheme.chipClass}`}>
                                 {itemsInGroup.length}
                               </span>
                             </div>
@@ -1649,155 +1782,206 @@ export default function App() {
                           </div>
 
                           {!isCollapsed && (
-                            <div className="space-y-2">
+                            <div className="space-y-1">
                               {itemsInGroup.map((item) => {
                                 const code = totpCodes[item.id] || '------';
                                 const info = parseNotes(item.notes);
-                                const statusChips = getStatusChips(item, info);
-                                const relationHint = getRelationHint(item, info);
+                                const itemType = getAccountType(item);
+                                const typeStyle = ACCOUNT_TYPE_STYLES[itemType];
+                                const proxyHost = displayProxyHost(info.proxy);
 
-                                return (
-                                  <div
-                                    key={item.id}
-                                    onClick={() => handleEditItemClick(item)}
-                                    className="bg-slate-900/40 backdrop-blur-md border border-slate-800/80 hover:border-cyan-500/40 hover:bg-slate-900/60 rounded-2xl p-3 flex flex-col justify-between cursor-pointer transition-all duration-150 relative active:scale-[0.98] group"
-                                  >
-                                    <div className="flex items-start justify-between">
-                                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                                        {getPlatformBadge(item.issuer)}
-                                        <div className="min-w-0">
-                                          <span className="font-semibold text-xs text-slate-200 truncate block">
-                                            {item.issuer}
+                                  return (
+                                    <div
+                                      key={item.id}
+                                      className={`backdrop-blur-sm border rounded-lg p-2.5 flex flex-col gap-2 transition-all duration-150 relative group shadow-sm ${typeStyle.cardClass}`}
+                                    >
+                                      <div className="flex items-center justify-between gap-2.5 w-full min-w-0">
+                                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                          {getPlatformBadge(item.issuer)}
+                                          <span className={`text-[9px] px-1 py-0.2 rounded border font-medium shrink-0 scale-90 origin-left ${typeStyle.badgeClass}`}>
+                                            {typeStyle.label}
                                           </span>
-                                          <span className="text-[10px] text-slate-500 truncate block">
-                                            {item.account || '无账号名'}
-                                          </span>
+                                          <div
+                                            onClick={() => handleCopy(item.id, item.account || '', 'account')}
+                                            className={`text-[11px] font-bold font-mono truncate cursor-pointer transition-colors leading-tight select-all flex-1 min-w-0 ${
+                                              copiedKey === `${item.id}:account` ? 'text-emerald-400' : 'text-slate-200 hover:text-cyan-400'
+                                            }`}
+                                            title={item.account ? `账号：${item.account}（点击复制）` : '无账号'}
+                                          >
+                                            {copiedKey === `${item.id}:account` ? '账号已复制' : (item.account || '无账号')}
+                                          </div>
+                                        </div>
+
+                                        <div className="shrink-0 flex items-center gap-1.5">
+                                          {item.secret ? (() => {
+                                            const isTotpCopyDisabled = !item.secret || !code || code === 'Error' || code === '------' || code === '';
+                                            const handleTotpClick = (e: React.MouseEvent) => {
+                                              e.stopPropagation();
+                                              if (isTotpCopyDisabled) return;
+                                              handleCopy(item.id, code.replace(/\s+/g, ''), 'totp');
+                                            };
+                                            const formattedCode = code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
+                                            const isTotpCopied = copiedKey === `${item.id}:totp`;
+                                            return (
+                                              <div
+                                                onClick={handleTotpClick}
+                                                className={`flex items-center gap-1 cursor-pointer select-none px-1.5 py-1 rounded bg-slate-950/20 hover:bg-slate-950/40 border border-white/5 transition-colors ${
+                                                  isTotpCopyDisabled ? 'opacity-50 cursor-not-allowed text-rose-400 border-rose-500/20 bg-rose-500/10' : ''
+                                                }`}
+                                                title={isTotpCopyDisabled ? '无可用 2FA 验证码' : `2FA：${formattedCode}，剩余 ${secondsRemaining}s（点击复制）`}
+                                              >
+                                                <Key className={`w-2.5 h-2.5 shrink-0 ${isTotpCopied ? 'text-emerald-400' : 'text-slate-400'}`} />
+                                                <span className={`text-[10.5px] font-bold font-mono tracking-wider transition-colors ${
+                                                  isTotpCopied ? 'text-emerald-400' : get2FaColor(itemType, secondsRemaining)
+                                                }`}>
+                                                  {isTotpCopied ? '已复制' : formattedCode}
+                                                </span>
+                                                {!isTotpCopyDisabled && (
+                                                  <div className="shrink-0 flex items-center justify-center" title={`剩余时间: ${secondsRemaining}秒`}>
+                                                    <svg height="8" width="8" className="transform -rotate-90">
+                                                      <circle
+                                                        stroke="rgba(255, 255, 255, 0.08)"
+                                                        fill="transparent"
+                                                        strokeWidth="1"
+                                                        r="3"
+                                                        cx="4"
+                                                        cy="4"
+                                                      />
+                                                      <circle
+                                                        stroke={secondsRemaining < 5 ? '#ef4444' : (itemType === 'google' ? '#3b82f6' : itemType === 'gpt' ? '#10b981' : itemType === 'email' ? '#a78bfa' : itemType === 'proxy' ? '#f59e0b' : '#64748b')}
+                                                        fill="transparent"
+                                                        strokeWidth="1"
+                                                        strokeDasharray={`${2 * Math.PI * 3}`}
+                                                        style={{ strokeDashoffset: `${2 * Math.PI * 3 * (1 - secondsRemaining / 30)}` }}
+                                                        strokeLinecap="round"
+                                                        r="3"
+                                                        cx="4"
+                                                        cy="4"
+                                                        className="transition-all duration-1000 ease-linear"
+                                                      />
+                                                    </svg>
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          })() : (
+                                            <div className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-medium font-mono select-none">
+                                              <Key className="w-2.5 h-2.5 shrink-0 text-rose-400" />
+                                              <span>无2FA</span>
+                                            </div>
+                                          )}
                                         </div>
                                       </div>
 
-                                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleEditItemClick(item)}
-                                          className="p-1 text-slate-400 hover:text-cyan-400 hover:bg-slate-800/60 rounded transition-colors focus:outline-none"
-                                          title="编辑"
-                                        >
-                                          <Edit2 className="w-3.5 h-3.5" />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleDeleteItem(item.id)}
-                                          className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-800/60 rounded transition-colors focus:outline-none"
-                                          title="删除"
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                    </div>
+                                      <div className="flex items-center justify-between w-full mt-0.5 pt-1.5 border-t border-white/5" onClick={(e) => e.stopPropagation()}>
+                                        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                          {proxyHost ? (() => {
+                                            const isProxyCopied = copiedKey === `${item.id}:proxy`;
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCopy(item.id, proxyHost, 'proxy')}
+                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                  isProxyCopied
+                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                }`}
+                                                title={`代理 IP：${proxyHost}（点击复制）`}
+                                              >
+                                                <Globe className="w-2.5 h-2.5" />
+                                                <span className="max-w-[70px] truncate font-mono">
+                                                  {isProxyCopied ? '已复制' : `代理 ${proxyHost}`}
+                                                </span>
+                                              </button>
+                                            );
+                                          })() : (
+                                            <div
+                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                              title="代理未配置"
+                                            >
+                                              <Globe className="w-2.5 h-2.5 text-rose-400" />
+                                              <span>无代理</span>
+                                            </div>
+                                          )}
 
-                                    {statusChips.length > 0 && (
-                                      <div className="flex flex-wrap gap-1 mt-2">
-                                        {statusChips.map((chip, idx) => (
-                                          <span key={idx} className={`text-[9px] px-1.5 py-0.2 rounded font-medium ${chip.bg}`}>
-                                            {chip.text}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
+                                          {info.phone ? (() => {
+                                            const isPhoneCopied = copiedKey === `${item.id}:phone`;
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCopy(item.id, info.phone || '', 'phone')}
+                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                  isPhoneCopied
+                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                }`}
+                                                title="点击复制手机"
+                                              >
+                                                <Smartphone className="w-2.5 h-2.5" />
+                                                <span className="max-w-[55px] truncate font-mono">
+                                                  {isPhoneCopied ? '已复制' : maskPhone(info.phone)}
+                                                </span>
+                                              </button>
+                                            );
+                                          })() : (
+                                            <div
+                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                              title="手机号未配置"
+                                            >
+                                              <Smartphone className="w-2.5 h-2.5 text-rose-400" />
+                                              <span>无手机</span>
+                                            </div>
+                                          )}
 
-                                    {relationHint && (
-                                      <div className="text-[9px] text-cyan-300 mt-1.5 flex items-center gap-1 bg-cyan-950/20 px-2 py-0.5 rounded border border-cyan-950/40">
-                                        <Link className="w-2.5 h-2.5 shrink-0" />
-                                        <span className="truncate">{relationHint}</span>
-                                      </div>
-                                    )}
+                                          {info.password ? (() => {
+                                            const isPasswordCopied = copiedKey === `${item.id}:password`;
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCopy(item.id, info.password || '', 'password')}
+                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                  isPasswordCopied
+                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                }`}
+                                                title="点击复制密码"
+                                              >
+                                                <Lock className="w-2.5 h-2.5" />
+                                                <span>{isPasswordCopied ? '已复制' : '密码'}</span>
+                                              </button>
+                                            );
+                                          })() : (
+                                            <div
+                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                              title="密码未配置"
+                                            >
+                                              <Lock className="w-2.5 h-2.5 text-rose-400" />
+                                              <span>无密码</span>
+                                            </div>
+                                          )}
+                                        </div>
 
-                                    {item.secret && (
-                                      <div className="flex items-center justify-between mt-2.5 bg-slate-950/30 p-2 rounded-xl border border-slate-800/50">
-                                        <span className={`text-2xl font-bold font-mono tracking-widest transition-all duration-300 ${
-                                          secondsRemaining < 5 ? 'text-rose-500 animate-pulse' : 'text-cyan-400'
-                                        }`}>
-                                          {code.slice(0, 3)} {code.slice(3)}
-                                        </span>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleEditItemClick(item)}
+                                            className="inline-flex items-center p-1 text-slate-400 hover:text-cyan-300 bg-slate-950/20 hover:bg-cyan-500/10 border border-white/5 rounded transition-colors focus:outline-none"
+                                            title="编辑"
+                                          >
+                                            <Edit2 className="w-2.5 h-2.5" />
+                                          </button>
 
-                                        <div className="shrink-0 flex items-center justify-center" title={`剩余时间: ${secondsRemaining}秒`}>
-                                          <svg height="16" width="16" className="transform -rotate-90">
-                                            <circle
-                                              stroke="rgba(255, 255, 255, 0.08)"
-                                              fill="transparent"
-                                              strokeWidth="2"
-                                              r="6"
-                                              cx="8"
-                                              cy="8"
-                                            />
-                                            <circle
-                                              stroke={secondsRemaining < 5 ? '#ef4444' : '#06b6d4'}
-                                              fill="transparent"
-                                              strokeWidth="2"
-                                              strokeDasharray={`${2 * Math.PI * 6}`}
-                                              style={{ strokeDashoffset: `${2 * Math.PI * 6 * (1 - secondsRemaining / 30)}` }}
-                                              strokeLinecap="round"
-                                              r="6"
-                                              cx="8"
-                                              cy="8"
-                                              className="transition-all duration-1000 ease-linear"
-                                            />
-                                          </svg>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDeleteItem(item.id)}
+                                            className="inline-flex items-center p-1 text-rose-400 hover:text-rose-100 bg-rose-950/20 hover:bg-rose-500/15 border border-rose-400/20 rounded transition-colors focus:outline-none"
+                                            title="删除"
+                                          >
+                                            <Trash2 className="w-2.5 h-2.5" />
+                                          </button>
                                         </div>
                                       </div>
-                                    )}
-
-                                    <div className="flex items-center gap-1.5 mt-3 pt-2 border-t border-slate-800/40" onClick={(e) => e.stopPropagation()}>
-                                      {(item.account || info.password) && (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleAutofill(item, info)}
-                                          className="flex-1 flex items-center justify-center py-1 rounded text-[10px] font-medium transition-all bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white border border-cyan-600/30 active:scale-95"
-                                        >
-                                          填充
-                                        </button>
-                                      )}
-
-                                      <button
-                                        type="button"
-                                        disabled={!item.account}
-                                        onClick={() => handleCopy(item.id, item.account, 'account')}
-                                        className={`flex-1 flex items-center justify-center py-1 rounded text-[10px] font-medium transition-all ${
-                                          copiedKey === `${item.id}:account`
-                                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                            : 'bg-slate-900/60 hover:bg-slate-800/60 text-slate-300 border border-slate-800/60 disabled:opacity-30 disabled:cursor-not-allowed'
-                                        }`}
-                                      >
-                                        {copiedKey === `${item.id}:account` ? '已复制' : '账号'}
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        disabled={!info.password}
-                                        onClick={() => handleCopy(item.id, info.password || '', 'password')}
-                                        className={`flex-1 flex items-center justify-center py-1 rounded text-[10px] font-medium transition-all ${
-                                          copiedKey === `${item.id}:password`
-                                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                            : 'bg-slate-900/60 hover:bg-slate-800/60 text-slate-300 border border-slate-800/60 disabled:opacity-30 disabled:cursor-not-allowed'
-                                        }`}
-                                      >
-                                        {copiedKey === `${item.id}:password` ? '已复制' : '密码'}
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        disabled={!item.secret || !code || code === 'Error' || code === '------' || code === ''}
-                                        onClick={() => handleCopy(item.id, code.replace(/\s+/g, ''), 'totp')}
-                                        className={`flex-1 flex items-center justify-center py-1 rounded text-[10px] font-medium transition-all ${
-                                          copiedKey === `${item.id}:totp`
-                                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                            : 'bg-slate-900/60 hover:bg-slate-800/60 text-slate-300 border border-slate-800/60 disabled:opacity-30 disabled:cursor-not-allowed'
-                                        }`}
-                                      >
-                                        {copiedKey === `${item.id}:totp` ? '已复制' : '2FA'}
-                                      </button>
                                     </div>
-                                  </div>
                                 );
                               })}
                             </div>
@@ -1822,6 +2006,7 @@ export default function App() {
                   onClick={() => {
                     setEditingGroup(null);
                     setNewGroupName('');
+                    setNewGroupColor('cyan');
                     setShowGroupModal(true);
                   }}
                   className="text-xs text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1 focus:outline-none"
@@ -1843,38 +2028,46 @@ export default function App() {
                 </div>
               ) : (
                 <div className="bg-slate-900/30 backdrop-blur-md rounded-2xl border border-slate-800/60 divide-y divide-slate-800/60 overflow-hidden">
-                  {decryptedGroups.map((g) => (
-                    <div key={g.id} className="p-3 flex justify-between items-center hover:bg-slate-900/20 transition-all">
-                      <div className="min-w-0">
-                        <span className="font-semibold text-xs text-slate-200 truncate block">
-                          {g.name}
-                        </span>
-                        <span className="text-[10px] text-slate-500 block mt-0.5">
-                          {decryptedItems.filter((i) => i.group_id === g.id).length} 个项目
-                        </span>
+                  {decryptedGroups.map((g) => {
+                    const colorKey = getGroupColorKey(g, g.id);
+                    const groupTheme = getGroupTheme(colorKey);
+                    return (
+                      <div key={g.id} className="p-3 flex justify-between items-center hover:bg-slate-900/20 transition-all">
+                        <div className="min-w-0 flex items-center gap-2.5">
+                          <span className={`w-3 h-3 rounded-full shadow-sm ${groupTheme.swatchClass}`} />
+                          <div className="min-w-0">
+                            <span className="font-semibold text-xs text-slate-200 truncate block">
+                              {g.name}
+                            </span>
+                            <span className="text-[10px] text-slate-500 block mt-0.5">
+                              {decryptedItems.filter((i) => i.group_id === g.id).length} 个项目 · {groupTheme.label}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingGroup(g);
+                              setNewGroupName(g.name);
+                              setNewGroupColor(colorKey);
+                              setShowGroupModal(true);
+                            }}
+                            className="p-1 text-slate-400 hover:text-cyan-400 hover:bg-slate-800/60 rounded transition-colors focus:outline-none"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteGroup(g.id)}
+                            className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-800/60 rounded transition-colors focus:outline-none"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingGroup(g);
-                            setNewGroupName(g.name);
-                            setShowGroupModal(true);
-                          }}
-                          className="p-1 text-slate-400 hover:text-cyan-400 hover:bg-slate-800/60 rounded transition-colors focus:outline-none"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteGroup(g.id)}
-                          className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-800/60 rounded transition-colors focus:outline-none"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -2390,6 +2583,51 @@ export default function App() {
         </div>
       )}
 
+      {pendingDeleteItem && (
+        <div className="absolute inset-0 bg-slate-950/75 z-50 flex items-end p-3 backdrop-blur-sm">
+          <div className="w-full rounded-2xl border border-rose-400/25 bg-slate-950 shadow-2xl shadow-rose-950/30 p-4 animate-slide-up">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-xl bg-rose-500/15 text-rose-300 flex items-center justify-center border border-rose-400/25 shrink-0">
+                <Trash2 className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-bold text-white">确认删除账号？</h3>
+                <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  即将删除 <span className="text-slate-100 font-semibold">{pendingDeleteItem.account || pendingDeleteItem.issuer || '此账号'}</span>。
+                  {remoteConfig ? ' 可选择仅本地删除，或同步删除到服务端。' : ' 此操作会从本地保管库移除该记录。'}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-2 mt-4">
+              {remoteConfig && (
+                <button
+                  type="button"
+                  onClick={() => confirmDeleteItem(true)}
+                  className="w-full bg-rose-600 hover:bg-rose-500 text-white py-2 rounded-xl text-xs font-semibold focus:outline-none"
+                >
+                  确认删除并同步
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => confirmDeleteItem(false)}
+                className="w-full bg-rose-950/50 hover:bg-rose-900/70 border border-rose-400/25 text-rose-100 py-2 rounded-xl text-xs font-semibold focus:outline-none"
+              >
+                {remoteConfig ? '仅从本地删除' : '确认删除'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingDeleteItemId(null)}
+                className="w-full bg-slate-900/80 hover:bg-slate-800 border border-slate-700/80 text-slate-300 py-2 rounded-xl text-xs font-medium focus:outline-none"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Slide-Up Overlay Panel for Add/Edit Group */}
       {showGroupModal && (
         <div className="absolute inset-0 bg-[#0B0F19] z-50 flex flex-col p-4 animate-slide-up">
@@ -2398,7 +2636,7 @@ export default function App() {
           <div className="relative flex-1 flex flex-col z-10">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-4">
               <h3 className="text-sm font-bold text-white">
-                {editingGroup ? '重命名分组' : '添加新分组'}
+                {editingGroup ? '编辑分组' : '添加新分组'}
               </h3>
               <button
                 type="button"
@@ -2424,6 +2662,31 @@ export default function App() {
                     required
                     autoFocus
                   />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-400 mb-2">
+                    分组背景色
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(Object.entries(GROUP_COLOR_STYLES) as Array<[GroupColorKey, GroupColorStyle]>).map(([key, theme]) => {
+                      const selected = newGroupColor === key;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setNewGroupColor(key)}
+                          className={`flex items-center gap-2 px-2.5 py-2 rounded-xl border text-[10px] transition-all ${
+                            selected
+                              ? 'bg-slate-800/80 text-white border-cyan-400/50 ring-2 ring-cyan-500/20'
+                              : 'bg-slate-900/40 text-slate-400 border-slate-800/80 hover:text-slate-200 hover:bg-slate-800/50'
+                          }`}
+                        >
+                          <span className={`w-3 h-3 rounded-full ${theme.swatchClass}`} />
+                          {theme.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 

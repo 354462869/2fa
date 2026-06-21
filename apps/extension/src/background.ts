@@ -156,27 +156,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           base64ToBytes(envelope.wrap_iv_b64)
         );
 
+        if (!requireSyncPassword) {
+          const wrappingKey = await getOrCreateWrappingKey();
+          const wrapped = await wrapSyncPassword(syncPassword, wrappingKey);
+          await localStore.set({
+            requireSyncPasswordEachSession: requireSyncPassword,
+            autoLockMinutes: state.autoLockMinutes,
+            wrappedSyncPassword: wrapped
+          });
+        } else {
+          await localStore.remove(['wrappedSyncPassword']);
+          await localStore.set({
+            requireSyncPasswordEachSession: requireSyncPassword,
+            autoLockMinutes: state.autoLockMinutes
+          });
+        }
+
         state.isUnlocked = true;
         state.syncPassword = syncPassword;
         state.kek = kek;
         state.dek = dek;
         state.lastActive = Date.now();
 
-        await localStore.set({
-          requireSyncPasswordEachSession: requireSyncPassword,
-          autoLockMinutes: state.autoLockMinutes
-        });
-
-        if (!requireSyncPassword) {
-          const wrappingKey = await getOrCreateWrappingKey();
-          const wrapped = await wrapSyncPassword(syncPassword, wrappingKey);
-          await localStore.set({ wrappedSyncPassword: wrapped });
-        } else {
-          await localStore.remove(['wrappedSyncPassword']);
-        }
-
         sendResponse({ success: true });
       } catch {
+        await lockVault(false);
         sendResponse({ success: false, error: 'decryption.wrong_sync_password' });
       }
     } else if (message.type === 'LOCK') {

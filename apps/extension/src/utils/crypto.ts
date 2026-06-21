@@ -114,7 +114,7 @@ export async function decryptRecord(iv_b64: string, ct_b64: string, dek: CryptoK
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('2fa-vault-db', 2);
+    const request = indexedDB.open('2fa-vault-db', 3);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('items')) {
@@ -125,6 +125,12 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('keys')) {
         db.createObjectStore('keys');
+      }
+      if (!db.objectStoreNames.contains('accounts')) {
+        db.createObjectStore('accounts', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('relations')) {
+        db.createObjectStore('relations', { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
