@@ -21,7 +21,7 @@ import {
   Smartphone
 } from 'lucide-react';
 import { ApiClient } from '@2fa/api-client';
-import type { Item, Group, VaultEnvelope } from '@2fa/api-types';
+import type { Item, Group, VaultEnvelope, Account, Relation } from '@2fa/api-types';
 import {
   deriveKeyFromPassword,
   generateDEK,
@@ -40,10 +40,13 @@ import {
   deleteItems,
   deleteGroups,
   clearVault,
-  localStore
+  localStore,
+  getAccounts,
+  getRelations
 } from './utils/storage';
 import { decodeBase32, generateTOTP } from './utils/totp';
 import { runSync } from './utils/sync';
+import { resolveItemTimestamp, formatAge, comparePlaintextItems, type PlaintextItemWithDates } from './utils/age';
 
 interface PlaintextItem {
   id: string;
@@ -56,7 +59,10 @@ interface PlaintextItem {
   account: string;
   secret: string;
   notes?: string;
+  created_at?: string;
 }
+
+type StoredItemWithDates = Item & Pick<PlaintextItemWithDates, 'created_at'>;
 
 interface AccountNotes {
   type?: AccountKind;
@@ -70,13 +76,7 @@ interface AccountNotes {
 type AccountKind = 'google' | 'gpt' | 'email' | 'proxy' | 'site';
 type CopyKind = 'account' | 'password' | 'phone' | 'totp' | 'proxy';
 
-const ACCOUNT_TYPE_SORT_ORDER: Record<AccountKind, number> = {
-  google: 0,
-  gpt: 1,
-  email: 2,
-  proxy: 3,
-  site: 4
-};
+
 
 const ACCOUNT_TYPE_STYLES: Record<AccountKind, {
   label: string;
@@ -260,20 +260,7 @@ function getAccountType(item: PlaintextItem): AccountKind {
   return inferType(item.issuer, item.account);
 }
 
-function getItemSortTime(item: PlaintextItem): number {
-  const time = Date.parse(item.updated_at);
-  return Number.isNaN(time) ? 0 : time;
-}
 
-function compareAccountItems(a: PlaintextItem, b: PlaintextItem): number {
-  const typeDiff = ACCOUNT_TYPE_SORT_ORDER[getAccountType(a)] - ACCOUNT_TYPE_SORT_ORDER[getAccountType(b)];
-  if (typeDiff !== 0) return typeDiff;
-
-  const timeDiff = getItemSortTime(b) - getItemSortTime(a);
-  if (timeDiff !== 0) return timeDiff;
-
-  return (a.account || a.issuer || a.id).localeCompare(b.account || b.issuer || b.id);
-}
 
 function maskPhone(phone?: string): string {
   if (!phone) return '';
@@ -481,6 +468,25 @@ export default function App() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [decryptedItems, setDecryptedItems] = useState<PlaintextItem[]>([]);
   const [decryptedGroups, setDecryptedGroups] = useState<PlaintextGroup[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [relations, setRelations] = useState<Relation[]>([]);
+  const [isIdle, setIsIdle] = useState(false);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+
+  const compareAccountItems = (a: PlaintextItem, b: PlaintextItem): number => {
+    return comparePlaintextItems(a, b, getAccountType, accounts, relations);
+  };
+
+  const resetSidebarIdleTimer = () => {
+    setIsIdle(false);
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+    }
+    idleTimerRef.current = setTimeout(() => {
+      setIsIdle(true);
+    }, 30000);
+  };
 
   const [activeTab, setActiveTab] = useState<'vault' | 'groups' | 'sync' | 'settings'>('vault');
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -660,8 +666,12 @@ export default function App() {
   const loadAndDecryptVault = async () => {
     const lItems = await getItems();
     const lGroups = await getGroups();
+    const lAccounts = await getAccounts();
+    const lRelations = await getRelations();
     setItems(lItems);
     setGroups(lGroups);
+    setAccounts(lAccounts);
+    setRelations(lRelations);
 
     if (dekRef.current) {
       const decItems: PlaintextItem[] = [];
@@ -676,7 +686,8 @@ export default function App() {
             item.ciphertext.aad_b64
           );
           const pt = JSON.parse(ptJson);
-          decItems.push({
+          const storedItem = item as StoredItemWithDates;
+          const decryptedItem: PlaintextItem = {
             id: item.id,
             group_id: item.group_id || null,
             rev: item.rev,
@@ -687,7 +698,11 @@ export default function App() {
             account: pt.account || '',
             secret: pt.secret || '',
             notes: pt.notes || ''
-          });
+          };
+          if (storedItem.created_at) {
+            decryptedItem.created_at = storedItem.created_at;
+          }
+          decItems.push(decryptedItem);
         } catch {
           continue;
         }
@@ -761,6 +776,26 @@ export default function App() {
       };
     }
   }, [isUnlocked, decryptedItems]);
+
+  useEffect(() => {
+    if (!isUnlocked) {
+      setIsIdle(false);
+      if (idleTimerRef.current) {
+        clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+      return;
+    }
+
+    resetSidebarIdleTimer();
+
+    return () => {
+      if (idleTimerRef.current) {
+        clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, [isUnlocked]);
 
   const handleSetupPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1584,7 +1619,19 @@ export default function App() {
   }
 
   return (
-    <div className="w-full h-screen min-w-[320px] bg-[#0B0F19] text-slate-100 overflow-hidden flex flex-col font-sans select-none relative">
+    <div
+      ref={sidebarRef}
+      onMouseMoveCapture={resetSidebarIdleTimer}
+      onMouseEnter={resetSidebarIdleTimer}
+      onMouseOverCapture={resetSidebarIdleTimer}
+      onClickCapture={resetSidebarIdleTimer}
+      onScrollCapture={resetSidebarIdleTimer}
+      onKeyDownCapture={resetSidebarIdleTimer}
+      onFocusCapture={resetSidebarIdleTimer}
+      onTouchStartCapture={resetSidebarIdleTimer}
+      onPointerMoveCapture={resetSidebarIdleTimer}
+      className="w-full h-screen min-w-[320px] bg-[#0B0F19] text-slate-100 overflow-hidden flex flex-col font-sans select-none relative"
+    >
       {/* Radial Glow */}
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(6,182,212,0.12),transparent_60%)] pointer-events-none" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(59,130,246,0.08),transparent_50%)] pointer-events-none" />
@@ -1789,6 +1836,7 @@ export default function App() {
                                 const itemType = getAccountType(item);
                                 const typeStyle = ACCOUNT_TYPE_STYLES[itemType];
                                 const proxyHost = displayProxyHost(info.proxy);
+                                const noteText = info.notes?.trim() || '无备注';
 
                                   return (
                                     <div
@@ -1873,114 +1921,121 @@ export default function App() {
                                         </div>
                                       </div>
 
-                                      <div className="flex items-center justify-between w-full mt-0.5 pt-1.5 border-t border-white/5" onClick={(e) => e.stopPropagation()}>
-                                        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                                          {proxyHost ? (() => {
-                                            const isProxyCopied = copiedKey === `${item.id}:proxy`;
-                                            return (
-                                              <button
-                                                type="button"
-                                                onClick={() => handleCopy(item.id, proxyHost, 'proxy')}
-                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
-                                                  isProxyCopied
-                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
-                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
-                                                }`}
-                                                title={`代理 IP：${proxyHost}（点击复制）`}
-                                              >
-                                                <Globe className="w-2.5 h-2.5" />
-                                                <span className="max-w-[70px] truncate font-mono">
-                                                  {isProxyCopied ? '已复制' : `代理 ${proxyHost}`}
-                                                </span>
-                                              </button>
-                                            );
-                                          })() : (
-                                            <div
-                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
-                                              title="代理未配置"
-                                            >
-                                              <Globe className="w-2.5 h-2.5 text-rose-400" />
-                                              <span>无代理</span>
-                                            </div>
-                                          )}
-
-                                          {info.phone ? (() => {
-                                            const isPhoneCopied = copiedKey === `${item.id}:phone`;
-                                            return (
-                                              <button
-                                                type="button"
-                                                onClick={() => handleCopy(item.id, info.phone || '', 'phone')}
-                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
-                                                  isPhoneCopied
-                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
-                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
-                                                }`}
-                                                title="点击复制手机"
-                                              >
-                                                <Smartphone className="w-2.5 h-2.5" />
-                                                <span className="max-w-[55px] truncate font-mono">
-                                                  {isPhoneCopied ? '已复制' : maskPhone(info.phone)}
-                                                </span>
-                                              </button>
-                                            );
-                                          })() : (
-                                            <div
-                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
-                                              title="手机号未配置"
-                                            >
-                                              <Smartphone className="w-2.5 h-2.5 text-rose-400" />
-                                              <span>无手机</span>
-                                            </div>
-                                          )}
-
-                                          {info.password ? (() => {
-                                            const isPasswordCopied = copiedKey === `${item.id}:password`;
-                                            return (
-                                              <button
-                                                type="button"
-                                                onClick={() => handleCopy(item.id, info.password || '', 'password')}
-                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
-                                                  isPasswordCopied
-                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
-                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
-                                                }`}
-                                                title="点击复制密码"
-                                              >
-                                                <Lock className="w-2.5 h-2.5" />
-                                                <span>{isPasswordCopied ? '已复制' : '密码'}</span>
-                                              </button>
-                                            );
-                                          })() : (
-                                            <div
-                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
-                                              title="密码未配置"
-                                            >
-                                              <Lock className="w-2.5 h-2.5 text-rose-400" />
-                                              <span>无密码</span>
-                                            </div>
-                                          )}
+                                      {isIdle ? (
+                                        <div className="flex items-center justify-between w-full mt-0.5 pt-1.5 border-t border-white/5 text-[10px] text-slate-400 font-medium select-none" onClick={(e) => e.stopPropagation()}>
+                                          <span className="min-w-0 truncate pr-2" title={noteText}>{noteText}</span>
+                                          <span className="shrink-0 font-mono text-cyan-400">{formatAge(resolveItemTimestamp(item, accounts, relations))}</span>
                                         </div>
+                                      ) : (
+                                        <div className="flex items-center justify-between w-full mt-0.5 pt-1.5 border-t border-white/5" onClick={(e) => e.stopPropagation()}>
+                                          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                            {proxyHost ? (() => {
+                                              const isProxyCopied = copiedKey === `${item.id}:proxy`;
+                                              return (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleCopy(item.id, proxyHost, 'proxy')}
+                                                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                    isProxyCopied
+                                                      ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                      : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                  }`}
+                                                  title={`代理 IP：${proxyHost}（点击复制）`}
+                                                >
+                                                  <Globe className="w-2.5 h-2.5" />
+                                                  <span className="max-w-[70px] truncate font-mono">
+                                                    {isProxyCopied ? '已复制' : `代理 ${proxyHost}`}
+                                                  </span>
+                                                </button>
+                                              );
+                                            })() : (
+                                              <div
+                                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                                title="代理未配置"
+                                              >
+                                                <Globe className="w-2.5 h-2.5 text-rose-400" />
+                                                <span>无代理</span>
+                                              </div>
+                                            )}
 
-                                        <div className="flex items-center gap-1.5 shrink-0">
-                                          <button
-                                            type="button"
-                                            onClick={() => handleEditItemClick(item)}
-                                            className="inline-flex items-center p-1 text-slate-400 hover:text-cyan-300 bg-slate-950/20 hover:bg-cyan-500/10 border border-white/5 rounded transition-colors focus:outline-none"
-                                            title="编辑"
-                                          >
-                                            <Edit2 className="w-2.5 h-2.5" />
-                                          </button>
+                                            {info.phone ? (() => {
+                                              const isPhoneCopied = copiedKey === `${item.id}:phone`;
+                                              return (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleCopy(item.id, info.phone || '', 'phone')}
+                                                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                    isPhoneCopied
+                                                      ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                      : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                  }`}
+                                                  title="点击复制手机"
+                                                >
+                                                  <Smartphone className="w-2.5 h-2.5" />
+                                                  <span className="max-w-[55px] truncate font-mono">
+                                                    {isPhoneCopied ? '已复制' : maskPhone(info.phone)}
+                                                  </span>
+                                                </button>
+                                              );
+                                            })() : (
+                                              <div
+                                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                                title="手机号未配置"
+                                              >
+                                                <Smartphone className="w-2.5 h-2.5 text-rose-400" />
+                                                <span>无手机</span>
+                                              </div>
+                                            )}
 
-                                          <button
-                                            type="button"
-                                            onClick={() => handleDeleteItem(item.id)}
-                                            className="inline-flex items-center p-1 text-rose-400 hover:text-rose-100 bg-rose-950/20 hover:bg-rose-500/15 border border-rose-400/20 rounded transition-colors focus:outline-none"
-                                            title="删除"
-                                          >
-                                            <Trash2 className="w-2.5 h-2.5" />
-                                          </button>
+                                            {info.password ? (() => {
+                                              const isPasswordCopied = copiedKey === `${item.id}:password`;
+                                              return (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleCopy(item.id, info.password || '', 'password')}
+                                                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                    isPasswordCopied
+                                                      ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                      : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                  }`}
+                                                  title="点击复制密码"
+                                                >
+                                                  <Lock className="w-2.5 h-2.5" />
+                                                  <span>{isPasswordCopied ? '已复制' : '密码'}</span>
+                                                </button>
+                                              );
+                                            })() : (
+                                              <div
+                                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                                title="密码未配置"
+                                              >
+                                                <Lock className="w-2.5 h-2.5 text-rose-400" />
+                                                <span>无密码</span>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleEditItemClick(item)}
+                                              className="inline-flex items-center p-1 text-slate-400 hover:text-cyan-300 bg-slate-950/20 hover:bg-cyan-500/10 border border-white/5 rounded transition-colors focus:outline-none"
+                                              title="编辑"
+                                            >
+                                              <Edit2 className="w-2.5 h-2.5" />
+                                            </button>
+
+                                            <button
+                                              type="button"
+                                              onClick={() => handleDeleteItem(item.id)}
+                                              className="inline-flex items-center p-1 text-rose-400 hover:text-rose-100 bg-rose-950/20 hover:bg-rose-500/15 border border-rose-400/20 rounded transition-colors focus:outline-none"
+                                              title="删除"
+                                            >
+                                              <Trash2 className="w-2.5 h-2.5" />
+                                            </button>
+                                          </div>
                                         </div>
-                                      </div>
+                                      )}
                                     </div>
                                 );
                               })}

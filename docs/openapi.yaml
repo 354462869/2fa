@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Account Manager Sync API
-  version: 0.2.1
+  version: 0.2.2
   description: |
     Account Manager 的自托管同步 API，支持端到端加密的 TOTP/2FA 和账号资料管理。
 
@@ -669,7 +669,7 @@ components:
         version:
           type: string
           description: 服务端构建版本。
-          example: "0.2.1"
+          example: "0.2.2"
         api:
           type: string
           description: API 契约版本。

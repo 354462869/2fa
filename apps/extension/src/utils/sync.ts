@@ -350,18 +350,20 @@ async function runProjection(localItems: Item[], dek: CryptoKey): Promise<void> 
     if (has_phone) relation_labels.push('phone');
     if (has_proxy) relation_labels.push('proxy');
 
+    const existingAccount = localAccounts.find(a => a.id === item.id);
+    const clientCreatedAt = existingAccount?.created_at || item.updated_at;
     const metadata_json = {
       has_password,
       has_totp,
       has_phone,
       has_proxy,
       has_bound_google,
-      relation_labels
+      relation_labels,
+      client_created_at: clientCreatedAt
     };
 
     const safeFields = safeAccountProjectionFields(plaintext.issuer, plaintext.account, type);
 
-    const existingAccount = localAccounts.find(a => a.id === item.id);
     const projectedAccountDeleted = item.deleted;
 
     let secret_ciphertext: RecordCipher | null = null;
@@ -414,7 +416,8 @@ async function runProjection(localItems: Item[], dek: CryptoKey): Promise<void> 
       status: projectedAccountDeleted ? 'deleted' : 'active',
       metadata_json,
       secret_ciphertext,
-      updated_at: item.updated_at
+      updated_at: item.updated_at,
+      created_at: clientCreatedAt
     };
 
     let saveAccount = false;
@@ -487,9 +490,13 @@ async function runProjection(localItems: Item[], dek: CryptoKey): Promise<void> 
         from_id: item.id,
         to_kind: rel.to_kind,
         to_id: rel.to_id,
-        metadata_json: rel.metadata_json,
+        metadata_json: {
+          ...rel.metadata_json,
+          client_created_at: existingRel?.created_at || item.updated_at
+        },
         secret_ciphertext: null,
-        updated_at: item.updated_at
+        updated_at: item.updated_at,
+        created_at: existingRel?.created_at || item.updated_at
       };
 
       let saveRel = false;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "账号管理器",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "安全、可自托管、离线优先且支持端到端加密的账号管理器。",
   "permissions": [
     "storage",
