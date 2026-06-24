@@ -139,8 +139,8 @@
 
 截至当前版本，以下边界修复和增强已实现：
 
-- **`created_at` 时间戳**：`accounts` 和 `relations` 记录均包含 `created_at` 与 `updated_at` 字段，服务端在首次创建时回填，后续更新时仅变更 `updated_at`。
-- **关系别名兼容**：`Relation` 同时支持通用模型（`kind`/`from_kind`/`from_id`/`to_kind`/`to_id`）和账号视图别名（`relation_type`/`from_account_id`/`to_account_id`）。两套字段可二选一使用，通用模型优先；服务端自动回填，保证管理员按账号关系视角阅读。
+- **`created_at` 时间戳**：`accounts` 和 `relations` 记录均包含 `created_at` 与 `updated_at` 字段；扩展端排序和账号年龄优先使用 `metadata_json.client_created_at` 记录的客户端创建时间，服务端字段仅作为同步元数据保留，后续更新只变更 `updated_at`。
+- **关系别名兼容**：`Relation` 同时支持通用模型（`kind`/`from_kind`/`from_id`/`to_kind`/`to_id`）和账号视图别名（`relation_type`/`from_account_id`/`to_account_id`）。两套字段可二选一使用，通用模型优先；服务端会在响应中补齐别名，方便管理员按账号关系视角阅读。
 - **版本化密文投影**：客户端加密的 `secret_ciphertext` 解密后为包含 `schema_version` 的 JSON 对象，客户端基于版本号做兼容解析，服务端不参与 schema 演进。
-- **手动触发的自动填充/内容脚本**：扩展的 content script 仅响应用户手动触发的填充操作，不做自动识别或自动注入。长期保留此安全边界，避免静默介入页面上下文。
+- **网页填充安全边界**：扩展保留 content script 的最小填充接收能力，但当前侧边栏 UI 主要提供复制操作，暂未开放填充按钮；即使未来接入填充入口，也只能响应用户手动触发，不做自动识别或自动注入。
 - **管理员只读关系图**：管理后台可读取用户账号元数据和关系记录，展示账号之间的依赖结构（如 GPT 账号使用哪个 Google 邮箱、绑定哪个手机号），但不返回任何 `secret_ciphertext` 字段。

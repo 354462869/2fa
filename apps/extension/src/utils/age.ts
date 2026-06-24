@@ -26,7 +26,16 @@ export function resolveItemTimestamp(
   relations: Relation[],
   fallbackDate: Date = new Date()
 ): string {
-  // 1. relation.created_at for the item/group relation if available
+  if (item.created_at) {
+    return item.created_at;
+  }
+
+  const acct = accounts.find(a => !a.deleted && a.id === item.id);
+  if (acct) {
+    const metadataCreatedAt = getMetadataCreatedAt(acct.metadata_json);
+    if (metadataCreatedAt) return metadataCreatedAt;
+  }
+
   if (item.group_id) {
     const rel = relations.find(r => 
       !r.deleted &&
@@ -40,20 +49,10 @@ export function resolveItemTimestamp(
     }
   }
 
-  // 2. account.created_at by item/account id if available
-  const acct = accounts.find(a => !a.deleted && a.id === item.id);
   if (acct) {
-    const metadataCreatedAt = getMetadataCreatedAt(acct.metadata_json);
-    if (metadataCreatedAt) return metadataCreatedAt;
     if (acct.created_at) return acct.created_at;
   }
 
-  // 3. item.created_at if present on the runtime object
-  if (item.created_at) {
-    return item.created_at;
-  }
-
-  // 4. current time for legacy records without a creation timestamp
   return fallbackDate.toISOString();
 }
 

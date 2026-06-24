@@ -50,16 +50,16 @@
 
 # v0.2.0
 
-本版本将项目从 TOTP/2FA 管理器演进为账号管理器（Account Manager），新增账号元数据、账号关系、管理后台关系图和用户手动触发的网页填充能力。
+本版本将项目从 TOTP/2FA 管理器演进为账号管理器（Account Manager），新增账号元数据、账号关系、管理后台关系图，并为后续用户手动触发网页填充保留 content script 基础能力。
 
 ## 更新内容
 
 - 浏览器扩展更名为“账号管理器”，账号库 UI 支持账号分类、密码、手机号、代理和关联 Google 信息的本地加密保存。
 - 新增 `accounts` / `relations` 同步记录类型，服务端只保存安全默认元数据，密码、TOTP secret、完整手机号、代理认证和私密备注保留在客户端加密正文中。
-- `accounts` / `relations` 增加 `created_at`，旧数据库会在启动迁移时从 `updated_at` 回填。
+- `accounts` / `relations` 增加 `created_at`，用于保存服务端同步元数据；扩展端可通过 `metadata_json` 携带客户端创建时间。
 - 关系 API 保留通用字段 `kind/from_kind/from_id/to_kind/to_id`，同时提供设计别名 `relation_type/from_account_id/to_account_id`。
 - 管理后台新增账号/关系元数据展示和只读关系图，不返回 `secret_ciphertext`。
-- 扩展新增手动触发的 content script 填充入口，只有用户点击账号卡片“填充”时才向当前标签页发送账号/密码。
+- 扩展新增 content script 的最小填充接收能力，但侧边栏账号卡片当前仍以复制操作为主，未开放静默自动填充。
 - 扩展同步投影改为独立版本化账号秘密密文，不再复用旧 item ciphertext。
 
 ## 兼容性和升级说明

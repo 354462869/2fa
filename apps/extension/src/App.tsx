@@ -42,11 +42,12 @@ import {
   clearVault,
   localStore,
   getAccounts,
-  getRelations
+  getRelations,
+  type ItemWithClientCreatedAt
 } from './utils/storage';
 import { decodeBase32, generateTOTP } from './utils/totp';
 import { runSync } from './utils/sync';
-import { resolveItemTimestamp, formatAge, comparePlaintextItems, type PlaintextItemWithDates } from './utils/age';
+import { resolveItemTimestamp, formatAge, comparePlaintextItems } from './utils/age';
 
 interface PlaintextItem {
   id: string;
@@ -62,7 +63,7 @@ interface PlaintextItem {
   created_at?: string;
 }
 
-type StoredItemWithDates = Item & Pick<PlaintextItemWithDates, 'created_at'>;
+type StoredItemWithDates = ItemWithClientCreatedAt;
 
 interface AccountNotes {
   type?: AccountKind;
@@ -243,6 +244,32 @@ function stringifyNotes(info: AccountNotes): string {
   return JSON.stringify({
     vault_v1: info
   });
+}
+
+function dateInputValueFromTimestamp(timestamp?: string): string {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function timestampFromDateInputValue(value: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [yearRaw, monthRaw, dayRaw] = value.split('-');
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  const date = new Date(year, month - 1, day, 12, 0, 0, 0);
+  if (Number.isNaN(date.getTime())) return null;
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date.toISOString();
+}
+
+function todayDateInputValue(): string {
+  return dateInputValueFromTimestamp(new Date().toISOString());
 }
 
 function inferType(issuer: string, account: string): AccountKind {
@@ -510,6 +537,7 @@ export default function App() {
   const [newItemSecret, setNewItemSecret] = useState('');
   const [newItemGroupId, setNewItemGroupId] = useState<string>('');
   const [newItemNotes, setNewItemNotes] = useState('');
+  const [newItemCreatedDate, setNewItemCreatedDate] = useState(todayDateInputValue());
 
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState<PlaintextGroup | null>(null);
@@ -928,6 +956,7 @@ export default function App() {
     setNewItemSecret('');
     setNewItemGroupId('');
     setNewItemNotes('');
+    setNewItemCreatedDate(todayDateInputValue());
     setAccountType('site');
     setPassword('');
     setBoundPhone('');
@@ -952,6 +981,7 @@ export default function App() {
     setBoundProxy(info.proxy || '');
     setBoundGoogle(info.bound_google || '');
     setNewItemNotes(info.notes || '');
+    setNewItemCreatedDate(dateInputValueFromTimestamp(resolveItemTimestamp(item, accounts, relations)) || todayDateInputValue());
 
     setSelectedFileName('');
     setQrPreviewSrc('');
@@ -1126,14 +1156,16 @@ export default function App() {
       });
 
       const cipher = await encryptRecord(itemPlaintext, dekRef.current, itemId);
+      const createdAt = timestampFromDateInputValue(newItemCreatedDate) || new Date().toISOString();
 
-      const updatedItem: Item = {
+      const updatedItem: StoredItemWithDates = {
         id: itemId,
         group_id: newItemGroupId || null,
         rev: editingItem ? editingItem.rev : 0,
         seq: 0,
         deleted: false,
         updated_at: new Date().toISOString(),
+        created_at: createdAt,
         ciphertext: cipher
       };
 
@@ -1148,6 +1180,7 @@ export default function App() {
       setNewItemSecret('');
       setNewItemGroupId('');
       setNewItemNotes('');
+      setNewItemCreatedDate(todayDateInputValue());
       setAccountType('site');
       setPassword('');
       setBoundPhone('');
@@ -1726,6 +1759,7 @@ export default function App() {
                     setNewItemSecret('');
                     setNewItemGroupId(selectedGroupId || '');
                     setNewItemNotes('');
+                    setNewItemCreatedDate(todayDateInputValue());
                     setAccountType('site');
                     setPassword('');
                     setBoundPhone('');
@@ -2471,6 +2505,20 @@ export default function App() {
                       value={newItemAccount}
                       onChange={(e) => setNewItemAccount(e.target.value)}
                       className="w-full px-3 py-2 bg-slate-900/50 border border-slate-800/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-400 mb-1 flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5 text-cyan-500" />
+                      创建日期
+                    </label>
+                    <input
+                      type="date"
+                      value={newItemCreatedDate}
+                      onChange={(e) => setNewItemCreatedDate(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-900/50 border border-slate-800/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 [color-scheme:dark]"
+                      required
                     />
                   </div>
 

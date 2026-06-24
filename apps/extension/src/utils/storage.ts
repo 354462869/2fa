@@ -1,5 +1,7 @@
 import type { Item, Group, Account, Relation } from '@2fa/api-types';
 
+export type ItemWithClientCreatedAt = Item & { created_at?: string };
+
 export interface StorageLocal {
   get(keys: string[] | Record<string, unknown>): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
@@ -73,7 +75,7 @@ export function openStorageDB(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveItems(items: Item[]): Promise<void> {
+export async function saveItems(items: ItemWithClientCreatedAt[]): Promise<void> {
   const db = await openStorageDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('items', 'readwrite');
@@ -86,7 +88,7 @@ export async function saveItems(items: Item[]): Promise<void> {
   });
 }
 
-export async function getItems(): Promise<Item[]> {
+export async function getItems(): Promise<ItemWithClientCreatedAt[]> {
   const db = await openStorageDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('items', 'readonly');

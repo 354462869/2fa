@@ -30,8 +30,25 @@ import {
   saveAccounts,
   getRelations,
   saveRelations,
-  localStore
+  localStore,
+  type ItemWithClientCreatedAt
 } from './storage';
+
+function getMetadataCreatedAt(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const metadata = value as Record<string, unknown>;
+  return typeof metadata.client_created_at === 'string' ? metadata.client_created_at : null;
+}
+
+function resolveClientCreatedAt(
+  item: ItemWithClientCreatedAt,
+  existingAccount: Account | undefined
+): string {
+  return item.created_at
+    || getMetadataCreatedAt(existingAccount?.metadata_json)
+    || existingAccount?.created_at
+    || item.updated_at;
+}
 
 interface AccountSecretPayload {
   schema_version: 1;
@@ -351,7 +368,7 @@ async function runProjection(localItems: Item[], dek: CryptoKey): Promise<void> 
     if (has_proxy) relation_labels.push('proxy');
 
     const existingAccount = localAccounts.find(a => a.id === item.id);
-    const clientCreatedAt = existingAccount?.created_at || item.updated_at;
+    const clientCreatedAt = resolveClientCreatedAt(item, existingAccount);
     const metadata_json = {
       has_password,
       has_totp,

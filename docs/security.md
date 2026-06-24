@@ -70,8 +70,9 @@
 
 具体而言：
 
-- `KEK_sync` 由同步密码通过内存密集型 KDF（推荐：Argon2id）派生，
-  并绑定到服务端以非密钥形式存储在每个用户的 `kdf_salt` 上。
+- `KEK_sync` 由同步密码通过 KDF 派生；当前 Chromium Web Crypto 实现使用
+  PBKDF2-SHA-256，信封中的 `kdf` / `kdf_params` 记录实际算法和参数。
+  长期可在客户端能力允许时迁移到 Argon2id 等内存密集型 KDF。
 - `DEK_vault` 是首台设备生成的随机 256 位密钥，用 `KEK_sync` 包裹后
   作为 `wrapped_dek` 上传。其他设备获取 `wrapped_dek`，使用从相同同步密码
   派生的同一 `KEK_sync` 解包。

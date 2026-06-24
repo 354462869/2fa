@@ -104,8 +104,9 @@
   "login_identifier_hash": null,
   "status": "active",
   "tags_json": ["GPT"],
-  "metadata_json": { "has_password": true, "has_totp": true },
+  "metadata_json": { "has_password": true, "has_totp": true, "client_created_at": "2026-06-19T08:00:00Z" },
   "secret_ciphertext": { "alg": "A256GCM", "iv_b64": "...", "ct_b64": "..." },
+  "created_at": "2026-06-20T03:21:11Z",
   "updated_at": "2026-06-20T03:21:11Z"
 }
 ```
@@ -129,13 +130,14 @@
   "from_id": "01J0Q5...",
   "to_kind": "proxy",
   "to_id": "opaque-proxy-target-id",
-  "metadata_json": { "label": "proxy" },
+  "metadata_json": { "label": "proxy", "client_created_at": "2026-06-19T08:00:00Z" },
+  "created_at": "2026-06-20T03:21:12Z",
   "updated_at": "2026-06-20T03:21:12Z"
 }
 ```
 
 关系可以没有 `secret_ciphertext`。如果某类关系未来需要敏感正文，必须放入
-`secret_ciphertext`，不得放入 `metadata_json`。
+`secret_ciphertext`，不得放入 `metadata_json`。扩展需要展示账号加入日期或账号年龄时，优先使用 `metadata_json.client_created_at` 这类非敏感客户端元数据。
 
 ## 4. `seq` 计数器
 

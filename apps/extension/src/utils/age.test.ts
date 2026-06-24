@@ -98,7 +98,7 @@ describe('age and timestamp helpers', () => {
       expect(resolveItemTimestamp(itemWithCreated, [], [])).toBe('2026-05-01T00:00:00Z');
     });
 
-    it('uses account.created_at if available', () => {
+    it('uses item.created_at before synced account metadata', () => {
       const itemWithCreated = { ...mockItem, created_at: '2026-05-01T00:00:00Z' };
       const accounts: Account[] = [
         {
@@ -110,15 +110,49 @@ describe('age and timestamp helpers', () => {
           platform: 'test',
           display_name: 'test',
           status: 'active',
+          metadata_json: { client_created_at: '2026-02-01T00:00:00Z' },
           created_at: '2026-04-01T00:00:00Z',
           updated_at: '2026-06-01T00:00:00Z',
         },
       ];
-      expect(resolveItemTimestamp(itemWithCreated, accounts, [])).toBe('2026-04-01T00:00:00Z');
+      expect(resolveItemTimestamp(itemWithCreated, accounts, [])).toBe('2026-05-01T00:00:00Z');
     });
 
-    it('uses relation.created_at for item/group relation if available', () => {
-      const itemWithCreated = { ...mockItem, created_at: '2026-05-01T00:00:00Z' };
+    it('uses synced account metadata before relation timestamps', () => {
+      const accounts: Account[] = [
+        {
+          id: 'item-123',
+          rev: 1,
+          seq: 1,
+          deleted: false,
+          kind: 'site',
+          platform: 'test',
+          display_name: 'test',
+          status: 'active',
+          metadata_json: { client_created_at: '2026-02-01T00:00:00Z' },
+          created_at: '2026-04-01T00:00:00Z',
+          updated_at: '2026-06-01T00:00:00Z',
+        },
+      ];
+      const relations: Relation[] = [
+        {
+          id: 'rel-1',
+          rev: 1,
+          seq: 1,
+          deleted: false,
+          kind: 'item_group',
+          from_kind: 'account',
+          from_id: 'item-123',
+          to_kind: 'group',
+          to_id: 'group-456',
+          created_at: '2026-03-01T00:00:00Z',
+          updated_at: '2026-06-01T00:00:00Z',
+        },
+      ];
+      expect(resolveItemTimestamp(mockItem, accounts, relations)).toBe('2026-02-01T00:00:00Z');
+    });
+
+    it('uses relation.created_at before account.created_at when metadata is absent', () => {
       const accounts: Account[] = [
         {
           id: 'item-123',
@@ -148,7 +182,7 @@ describe('age and timestamp helpers', () => {
           updated_at: '2026-06-01T00:00:00Z',
         },
       ];
-      expect(resolveItemTimestamp(itemWithCreated, accounts, relations)).toBe('2026-03-01T00:00:00Z');
+      expect(resolveItemTimestamp(mockItem, accounts, relations)).toBe('2026-03-01T00:00:00Z');
     });
   });
 

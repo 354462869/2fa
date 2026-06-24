@@ -810,7 +810,7 @@ components:
         kdf:
           type: string
           description: 用于从同步密码派生包裹密钥的 KDF 算法。
-          example: "argon2id"
+          example: "pbkdf2"
         kdf_params:
           $ref: '#/components/schemas/KdfParams'
         kdf_salt_b64:
@@ -1013,7 +1013,7 @@ components:
           $ref: '#/components/schemas/Id'
         relation_type:
           type: string
-          description: 与 `kind` 等价的设计文档别名。服务端始终回填，方便按账号关系视角阅读。
+          description: 与 `kind` 等价的设计文档别名。服务端响应会补齐该字段，方便按账号关系视角阅读。
         from_account_id:
           allOf:
             - $ref: '#/components/schemas/Id'
