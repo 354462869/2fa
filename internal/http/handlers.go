@@ -17,6 +17,11 @@ import (
 	"github.com/daling/2fa/internal/sync"
 )
 
+var (
+	errMissingCredentials = errors.New("missing credentials")
+	errAdminRequired      = errors.New("admin required")
+)
+
 type handlers struct {
 	auth   *auth.Service
 	sync   *sync.Service
@@ -128,7 +133,7 @@ func (h *handlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.Disabled {
-		writeError(w, http.StatusForbidden, "auth.user_disabled", "Account is disabled")
+		writeError(w, http.StatusUnauthorized, "auth.user_disabled", "Account is disabled")
 		return
 	}
 
@@ -173,7 +178,7 @@ func (h *handlers) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	user, _, err := h.auth.ValidateSession(r.Context(), token)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -189,7 +194,7 @@ func (h *handlers) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleMe(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -205,7 +210,7 @@ func (h *handlers) handleMe(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -252,7 +257,7 @@ func (h *handlers) handleChangePassword(w http.ResponseWriter, r *http.Request) 
 func (h *handlers) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -280,7 +285,7 @@ func (h *handlers) handleListDevices(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -309,12 +314,16 @@ func (h *handlers) handleRegisterDevice(w http.ResponseWriter, r *http.Request) 
 		CreatedAt:  now,
 	}
 
-	if err := h.store.CreateDevice(r.Context(), device); err != nil {
+	if err := h.auth.CreateDeviceAndBindSession(r.Context(), device, extractToken(r)); err != nil {
 		if errors.Is(err, storage.ErrDeviceExists) {
 			writeError(w, http.StatusConflict, "device_exists", "Device ID already registered")
 			return
 		}
-		h.logger.Error("create device failed", "err", err)
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Missing or invalid credentials")
+			return
+		}
+		h.logger.Error("create device and bind session failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to register device")
 		return
 	}
@@ -333,7 +342,7 @@ func (h *handlers) handleRegisterDevice(w http.ResponseWriter, r *http.Request) 
 func (h *handlers) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -359,7 +368,6 @@ func (h *handlers) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to revoke device")
 		return
 	}
-	h.store.DeleteSessionsByDevice(r.Context(), deviceID)
 
 	h.audit(r.Context(), "user", &user.ID, "device.revoke", strPtr("device"), &deviceID, r)
 
@@ -369,7 +377,7 @@ func (h *handlers) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleGetVault(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -391,7 +399,7 @@ func (h *handlers) handleGetVault(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handlePutEnvelope(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -442,7 +450,7 @@ func (h *handlers) handlePutEnvelope(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handlePull(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -505,7 +513,7 @@ func (h *handlers) handlePull(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handlePush(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -701,7 +709,7 @@ func (h *handlers) handlePush(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -728,7 +736,7 @@ func (h *handlers) handleGetItem(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -755,7 +763,7 @@ func (h *handlers) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -782,7 +790,7 @@ func (h *handlers) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleGetRelation(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.requireAuth(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Invalid session")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -949,7 +957,7 @@ func (h *handlers) handleAdminSetup(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	_, err := h.requireAdmin(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -992,7 +1000,7 @@ func (h *handlers) handleAdminListUsers(w http.ResponseWriter, r *http.Request) 
 func (h *handlers) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	_, err := h.requireAdmin(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1024,7 +1032,7 @@ func (h *handlers) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) {
 	admin, err := h.requireAdmin(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1052,7 +1060,7 @@ func (h *handlers) handleAdminDisableUser(w http.ResponseWriter, r *http.Request
 func (h *handlers) handleAdminEnableUser(w http.ResponseWriter, r *http.Request) {
 	admin, err := h.requireAdmin(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1078,7 +1086,7 @@ func (h *handlers) handleAdminEnableUser(w http.ResponseWriter, r *http.Request)
 
 func (h *handlers) handleAdminListUserDevices(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.requireAdmin(r); err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1115,7 +1123,7 @@ func (h *handlers) handleAdminListUserDevices(w http.ResponseWriter, r *http.Req
 
 func (h *handlers) handleAdminListUserAccounts(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.requireAdmin(r); err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1145,7 +1153,7 @@ func (h *handlers) handleAdminListUserAccounts(w http.ResponseWriter, r *http.Re
 
 func (h *handlers) handleAdminListUserRelations(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.requireAdmin(r); err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1176,7 +1184,7 @@ func (h *handlers) handleAdminListUserRelations(w http.ResponseWriter, r *http.R
 func (h *handlers) handleAdminRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	admin, err := h.requireAdmin(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1202,7 +1210,6 @@ func (h *handlers) handleAdminRevokeDevice(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to revoke device")
 		return
 	}
-	h.store.DeleteSessionsByDevice(r.Context(), deviceID)
 
 	h.audit(r.Context(), "admin", &admin.ID, "admin.device.revoke", strPtr("device"), &deviceID, r)
 
@@ -1212,7 +1219,7 @@ func (h *handlers) handleAdminRevokeDevice(w http.ResponseWriter, r *http.Reques
 func (h *handlers) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 	_, err := h.requireAdmin(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Admin authentication required")
+		writeAuthError(w, err)
 		return
 	}
 
@@ -1254,7 +1261,7 @@ func (h *handlers) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) requireAuth(r *http.Request) (*storage.User, *storage.Device, error) {
 	token := extractToken(r)
 	if token == "" {
-		return nil, nil, errors.New("missing token")
+		return nil, nil, errMissingCredentials
 	}
 	return h.auth.ValidateSession(r.Context(), token)
 }
@@ -1265,7 +1272,7 @@ func (h *handlers) requireAdmin(r *http.Request) (*storage.User, error) {
 		return nil, err
 	}
 	if user.Role != "admin" {
-		return nil, errors.New("not admin")
+		return nil, errAdminRequired
 	}
 	return user, nil
 }
@@ -1304,6 +1311,24 @@ func extractToken(r *http.Request) string {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, APIError{Code: code, Message: message})
+}
+
+func writeAuthError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errMissingCredentials), errors.Is(err, errAdminRequired):
+		writeError(w, http.StatusUnauthorized, "auth.unauthorized", "Missing or invalid credentials")
+	case errors.Is(err, auth.ErrSessionExpired):
+		writeError(w, http.StatusUnauthorized, "auth.session_expired", "Session expired")
+	case errors.Is(err, auth.ErrSessionInvalid):
+		writeError(w, http.StatusUnauthorized, "auth.session_invalid", "Invalid session")
+	case errors.Is(err, auth.ErrSessionRevoked):
+		writeError(w, http.StatusUnauthorized, "auth.session_revoked", "Session revoked")
+	case errors.Is(err, auth.ErrUserDisabled):
+		writeError(w, http.StatusUnauthorized, "auth.user_disabled", "Account is disabled")
+	default:
+		slog.Default().Error("authentication validation failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate session")
+	}
 }
 
 func decodeJSON(r *http.Request, dst interface{}) error {

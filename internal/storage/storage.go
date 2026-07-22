@@ -27,11 +27,13 @@ type Store interface {
 
 	CreateSession(ctx context.Context, session *Session) error
 	GetSession(ctx context.Context, token string) (*Session, error)
+	UpdateSessionExpiry(ctx context.Context, token string, expiresAt time.Time) error
 	DeleteSession(ctx context.Context, token string) error
 	DeleteSessionsByUser(ctx context.Context, userID string) error
 	DeleteSessionsByDevice(ctx context.Context, deviceID string) error
 
 	CreateDevice(ctx context.Context, device *Device) error
+	CreateDeviceAndBindSession(ctx context.Context, device *Device, tokenHash string) error
 	GetDevice(ctx context.Context, deviceID string) (*Device, error)
 	ListDevicesByUser(ctx context.Context, userID string) ([]*Device, error)
 	UpdateDeviceLastSeen(ctx context.Context, deviceID string, at time.Time) error

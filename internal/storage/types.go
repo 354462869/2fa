@@ -15,11 +15,12 @@ type User struct {
 
 // Session represents an authenticated session bound to a user and optionally a device.
 type Session struct {
-	TokenHash string
-	UserID    string
-	DeviceID  string // optional, may be empty
-	ExpiresAt time.Time
-	CreatedAt time.Time
+	TokenHash         string
+	UserID            string
+	DeviceID          string // optional, may be empty
+	ExpiresAt         time.Time
+	AbsoluteExpiresAt time.Time
+	CreatedAt         time.Time
 }
 
 // Device represents a registered client device.

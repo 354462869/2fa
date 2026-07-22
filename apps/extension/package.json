@@ -1,13 +1,15 @@
 {
   "name": "@2fa/extension",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
   "description": "Chromium MV3 extension for Account Manager.",
   "scripts": {
     "build": "vite build && vite build --config vite.background.config.ts && vite build --config vite.content.config.ts",
-    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:e2e": "pnpm run build && node e2e/run-e2e.mjs",
+    "test": "pnpm run test:unit && pnpm run test:e2e",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.background.json --noEmit",
     "lint": "echo \"no lint configured\" && exit 0",
     "format": "echo \"no formatter configured\" && exit 0"
@@ -21,6 +23,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/chrome": "^0.0.268",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",

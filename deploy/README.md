@@ -25,11 +25,15 @@ docker run --rm -p 8080:8080 \
   -e SERVER_DB_PATH=/data/2fa.sqlite \
   -e SERVER_PUBLIC_ORIGIN=http://127.0.0.1:8080 \
   -e SERVER_ALLOWED_ORIGINS=http://127.0.0.1:8080 \
-  ghcr.io/354462869/2fa-server:v0.2.2
+  -e SERVER_SESSION_TTL=720h \
+  -e SERVER_SESSION_MAX_LIFETIME=4320h \
+  ghcr.io/354462869/2fa-server:v0.2.3
 ```
 
 首次部署时，如果数据库为空，访问 `http://127.0.0.1:8080` 会进入管理后台并提示创建第一个管理员账号。
 生产环境必须设置强随机 `SERVER_SESSION_SECRET`，并在服务前放置 HTTPS 反向代理。
+反向代理必须覆盖客户端传入的 `X-Forwarded-For`，且不要让服务端端口绕过代理直接暴露到公网，否则攻击者可能通过伪造该请求头绕过按 IP 计算的认证限流。
+会话默认空闲超时为 `720h`，绝对生命周期为 `4320h`；活跃会话不会续期超过绝对期限。
 
 备份与升级：
 

@@ -6,6 +6,7 @@ Thumbs.db
 .idea/
 .playwright-mcp/
 .sisyphus/
+.omo/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json.example
@@ -50,6 +51,8 @@ node_modules/
 # ---- Test / coverage ----
 coverage/
 *.lcov
+**/test-results/
+**/playwright-report/
 
 # ---- Local data / runtime ----
 data/

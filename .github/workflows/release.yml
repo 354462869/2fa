@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, for example v0.1.1'
+        description: 'Release tag, for example v0.2.3'
         required: true
         type: string
 
@@ -26,6 +26,12 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -39,16 +45,16 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build shared packages
+      - name: Install Chrome for extension E2E
+        run: pnpm --filter @2fa/extension exec playwright install --with-deps chrome
+
+      - name: Run release quality gates
         run: |
-          pnpm --filter @2fa/api-types build
-          pnpm --filter @2fa/api-client build
-
-      - name: Build extension
-        run: pnpm --filter @2fa/extension build
-
-      - name: Build admin
-        run: pnpm --filter @2fa/admin build
+          make test
+          make build
+          make typecheck
+          make vet
+          git diff --check
 
       - name: Package extension
         run: |
@@ -68,6 +74,60 @@ jobs:
             emit { print }
           ' RELEASE_NOTES.md > "${GITHUB_WORKSPACE}/release-notes-${RELEASE_TAG}.md"
           test -s "${GITHUB_WORKSPACE}/release-notes-${RELEASE_TAG}.md"
+
+      - name: Build Docker smoke image
+        run: docker build -f deploy/Dockerfile -t 2fa-server:release-smoke .
+
+      - name: Smoke test Docker persistence and embedded admin
+        run: |
+          set -euo pipefail
+          container="2fa-release-smoke-${GITHUB_RUN_ID}"
+          volume="2fa-release-smoke-${GITHUB_RUN_ID}"
+          cleanup() {
+            docker rm -f "${container}" >/dev/null 2>&1 || true
+            docker volume rm "${volume}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker volume create "${volume}" >/dev/null
+
+          start_container() {
+            docker run -d --name "${container}" \
+              -p 127.0.0.1:18080:8080 \
+              -e SERVER_SESSION_SECRET=release-smoke-session-secret \
+              -v "${volume}:/data" \
+              2fa-server:release-smoke >/dev/null
+          }
+          wait_for_health() {
+            for attempt in $(seq 1 60); do
+              if curl -fsS http://127.0.0.1:18080/v1/meta/health >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            docker logs "${container}"
+            return 1
+          }
+
+          start_container
+          wait_for_health
+          curl -fsS http://127.0.0.1:18080/v1/meta/version | grep -q '"version":"0.2.3"'
+          curl -fsS http://127.0.0.1:18080/ >/dev/null
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            --data '{"username":"release-admin","password":"ReleaseSmokePassword123!"}' \
+            http://127.0.0.1:18080/v1/admin/setup >/dev/null
+          docker logs "${container}" > /tmp/2fa-release-smoke-first.log
+          docker stop "${container}" >/dev/null
+          docker rm "${container}" >/dev/null
+
+          start_container
+          wait_for_health
+          curl -fsS http://127.0.0.1:18080/v1/admin/setup/status | grep -q '"needs_setup":false'
+          docker run --rm --entrypoint /bin/sh -v "${volume}:/data" \
+            2fa-server:release-smoke -c 'test -s /data/2fa.sqlite'
+          if grep -Eqi '"level":"ERROR"|ReleaseSmokePassword123' /tmp/2fa-release-smoke-first.log; then
+            cat /tmp/2fa-release-smoke-first.log
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

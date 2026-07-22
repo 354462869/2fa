@@ -564,17 +564,62 @@ async function runProjection(localItems: Item[], dek: CryptoKey): Promise<void> 
 }
 
 function getErrorMessage(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
+  const msg = err instanceof Error && err.message ? err.message : fallback;
+  if (
+    msg.toLowerCase().includes('failed to fetch') ||
+    msg.toLowerCase().includes('fetch') ||
+    msg.toLowerCase().includes('networkerror')
+  ) {
+    return '网络连接失败，请检查服务器地址';
+  }
+  return msg;
+}
+
+export type SyncResult =
+  | { success: true }
+  | { success: false; kind: 'auth_expired' | 'device_revoked' | 'disabled' | 'error'; message: string };
+
+export type ClassifiedErrorKind = 'auth_expired' | 'device_revoked' | 'disabled' | 'error';
+
+export interface SyncErrorResponse {
+  readonly status: number;
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+  };
+}
+
+export function classifySyncError(res: SyncErrorResponse): ClassifiedErrorKind {
+  const code = res.error.code;
+  if (code === 'auth.session_revoked') {
+    return 'device_revoked';
+  }
+  if (
+    code === 'auth.session_expired' ||
+    code === 'auth.session_invalid' ||
+    (res.status === 401 && code === 'auth.unauthorized')
+  ) {
+    return 'auth_expired';
+  }
+  if (code === 'auth.user_disabled') {
+    return 'disabled';
+  }
+  return 'error';
+}
+
+function handleSyncError(res: { ok: false; status: number; error: { code: string; message: string } }): SyncResult {
+  const kind = classifySyncError(res);
+  return { success: false, kind, message: res.error.message };
 }
 
 export async function runSync(
   client: ApiClient,
   syncPassword: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<SyncResult> {
   try {
     const vaultRes = await client.sync.vault();
     if (!vaultRes.ok) {
-      return { success: false, error: vaultRes.error.message };
+      return handleSyncError(vaultRes);
     }
 
     const remoteVault = vaultRes.data;
@@ -597,7 +642,7 @@ export async function runSync(
           base64ToBytes(remoteVault.envelope.wrap_iv_b64)
         );
       } catch {
-        return { success: false, error: 'decryption.wrong_sync_password' };
+        return { success: false, kind: 'error', message: 'decryption.wrong_sync_password' };
       }
       localEnvelope = remoteVault.envelope;
       await localStore.set({ vaultEnvelope: localEnvelope });
@@ -615,7 +660,7 @@ export async function runSync(
           expected_rev: null
         });
         if (!uploadRes.ok && uploadRes.status !== 409) {
-          return { success: false, error: uploadRes.error.message };
+          return handleSyncError(uploadRes);
         }
       } else {
         const salt = globalThis.crypto.getRandomValues(new Uint8Array(16));
@@ -635,14 +680,14 @@ export async function runSync(
           expected_rev: null
         });
         if (!uploadRes.ok) {
-          return { success: false, error: uploadRes.error.message };
+          return handleSyncError(uploadRes);
         }
         await localStore.set({ vaultEnvelope: localEnvelope });
       }
     }
 
     if (!dek) {
-      return { success: false, error: 'Cryptographic initialization failed' };
+      return { success: false, kind: 'error', message: 'Cryptographic initialization failed' };
     }
 
     let hasMore = true;
@@ -652,7 +697,7 @@ export async function runSync(
         limit: 100
       });
       if (!pullRes.ok) {
-        return { success: false, error: pullRes.error.message };
+        return handleSyncError(pullRes);
       }
 
       const {
@@ -826,7 +871,7 @@ export async function runSync(
       });
 
       if (!pushRes.ok) {
-        return { success: false, error: pushRes.error.message };
+        return handleSyncError(pushRes);
       }
 
       const { applied, conflicts, next_seq } = pushRes.data;
@@ -959,6 +1004,6 @@ export async function runSync(
 
     return { success: true };
   } catch (err: unknown) {
-    return { success: false, error: getErrorMessage(err, 'Sync failed') };
+    return { success: false, kind: 'error', message: getErrorMessage(err, 'Sync failed') };
   }
 }

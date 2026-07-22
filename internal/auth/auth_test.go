@@ -53,7 +53,7 @@ func TestCreateSessionStoresOnlyTokenHash(t *testing.T) {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
 
-	svc := NewService(store, time.Hour)
+	svc := NewService(store, time.Hour, 24*time.Hour)
 	token, _, err := svc.CreateSession(context.Background(), "session-user", "")
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)

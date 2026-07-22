@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Account Manager Sync API
-  version: 0.2.2
+  version: 0.2.3
   description: |
     Account Manager 的自托管同步 API，支持端到端加密的 TOTP/2FA 和账号资料管理。
 
@@ -179,7 +179,12 @@ paths:
           $ref: '#/components/responses/Error'
     post:
       tags: [devices]
-      summary: 为调用者注册新设备。
+      summary: 注册新设备并将当前会话绑定到该设备。
+      description: |
+        客户端生成不透明 `device_id` 并传入 `{id, label}`。
+        服务端原子性地创建设备记录并将当前会话绑定到该设备。
+        注册成功后该会话即可用于同步操作。响应仅返回 `Device`
+        对象，不返回新会话令牌。
       requestBody:
         required: true
         content:
@@ -188,7 +193,7 @@ paths:
               $ref: '#/components/schemas/RegisterDeviceRequest'
       responses:
         '201':
-          description: 设备已注册。
+          description: 设备已注册，当前会话已绑定到该设备。
           content:
             application/json:
               schema:
@@ -197,6 +202,12 @@ paths:
           $ref: '#/components/responses/Error'
         '401':
           $ref: '#/components/responses/Error'
+        '409':
+          description: "`device_exists`：该 `device_id` 已被注册；响应不披露设备归属。"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
 
   /v1/devices/{deviceId}:
     parameters:
@@ -640,7 +651,13 @@ components:
       properties:
         code:
           type: string
-          description: 稳定的机器可读错误代码。
+          description: |
+            稳定的机器可读错误代码。认证凭据和会话错误包括：
+            - `auth.unauthorized`：缺少或格式错误的认证凭据。
+            - `auth.session_expired`：空闲超时或绝对生命周期已到期。
+            - `auth.session_invalid`：会话不存在或无效。
+            - `auth.session_revoked`：会话绑定的设备缺失或已撤销。
+            - `auth.user_disabled`：会话用户已被禁用。
           example: "auth.invalid_credentials"
         message:
           type: string
@@ -669,7 +686,7 @@ components:
         version:
           type: string
           description: 服务端构建版本。
-          example: "0.2.2"
+          example: "0.2.3"
         api:
           type: string
           description: API 契约版本。

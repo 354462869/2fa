@@ -286,7 +286,7 @@ describe('age and timestamp helpers', () => {
           platform: 'test',
           display_name: 'test',
           status: 'active',
-          created_at: '2026-06-25T00:00:00Z',
+          created_at: '2028-06-25T00:00:00Z',
           updated_at: '2026-06-15T00:00:00Z',
         }
       ];

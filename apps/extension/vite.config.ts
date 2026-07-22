@@ -11,5 +11,8 @@ export default defineConfig({
         popup: 'popup.html'
       }
     }
+  },
+  test: {
+    exclude: ['**/e2e/**', '**/node_modules/**', '**/dist/**']
   }
 });

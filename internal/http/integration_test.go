@@ -23,7 +23,7 @@ func setupIntegrationRouter(t *testing.T) http.Handler {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	authSvc := auth.NewService(store, 24*time.Hour)
+	authSvc := auth.NewService(store, 24*time.Hour, 30*24*time.Hour)
 	syncSvc := sync.NewService(store)
 	logger := newDiscardLogger()
 
@@ -34,6 +34,7 @@ func setupIntegrationRouter(t *testing.T) http.Handler {
 			Env:                 "development",
 			DBPath:              ":memory:",
 			SessionTTL:          24 * time.Hour,
+			SessionMaxLifetime:  30 * 24 * time.Hour,
 			RateLimitAuthPerMin: 100,
 			RateLimitSyncPerMin: 1000,
 		},
@@ -442,7 +443,7 @@ func TestDisabledUserCannotSync(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	authSvc := auth.NewService(store, 24*time.Hour)
+	authSvc := auth.NewService(store, 24*time.Hour, 30*24*time.Hour)
 	syncSvc := sync.NewService(store)
 	logger := newDiscardLogger()
 
@@ -453,6 +454,7 @@ func TestDisabledUserCannotSync(t *testing.T) {
 			Env:                 "development",
 			DBPath:              ":memory:",
 			SessionTTL:          24 * time.Hour,
+			SessionMaxLifetime:  30 * 24 * time.Hour,
 			RateLimitAuthPerMin: 100,
 			RateLimitSyncPerMin: 1000,
 		},
@@ -482,7 +484,7 @@ func TestAdminFlow(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	authSvc := auth.NewService(store, 24*time.Hour)
+	authSvc := auth.NewService(store, 24*time.Hour, 30*24*time.Hour)
 	syncSvc := sync.NewService(store)
 	logger := newDiscardLogger()
 
@@ -493,6 +495,7 @@ func TestAdminFlow(t *testing.T) {
 			Env:                 "development",
 			DBPath:              ":memory:",
 			SessionTTL:          24 * time.Hour,
+			SessionMaxLifetime:  30 * 24 * time.Hour,
 			RateLimitAuthPerMin: 100,
 			RateLimitSyncPerMin: 1000,
 		},

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	user_id TEXT NOT NULL,
 	device_id TEXT NOT NULL DEFAULT '',
 	expires_at TEXT NOT NULL,
+	absolute_expires_at TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -202,6 +204,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_kind, actor_id
 	if err := s.ensureColumn("relations", "created_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("add relations.created_at: %w", err)
 	}
+	if err := s.ensureColumn("sessions", "absolute_expires_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("add sessions.absolute_expires_at: %w", err)
+	}
 	// Backfill empty created_at from updated_at for legacy rows so existing data
 	// retains a stable creation timestamp when the column is first introduced.
 	if _, err := s.db.Exec(`UPDATE accounts SET created_at = updated_at WHERE created_at = '' OR created_at IS NULL`); err != nil {
@@ -209,6 +214,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_kind, actor_id
 	}
 	if _, err := s.db.Exec(`UPDATE relations SET created_at = updated_at WHERE created_at = '' OR created_at IS NULL`); err != nil {
 		return fmt.Errorf("backfill relations.created_at: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET absolute_expires_at = expires_at WHERE absolute_expires_at = '' OR absolute_expires_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill sessions.absolute_expires_at: %w", err)
 	}
 	return nil
 }
@@ -360,21 +368,26 @@ func (s *SQLiteStore) CountUsers(ctx context.Context) (int, error) {
 }
 
 func (s *SQLiteStore) CreateSession(ctx context.Context, session *Session) error {
+	absoluteExpiresAt := session.AbsoluteExpiresAt
+	if absoluteExpiresAt.IsZero() {
+		absoluteExpiresAt = session.ExpiresAt
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (token_hash, user_id, device_id, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
+			INSERT INTO sessions (token_hash, user_id, device_id, expires_at, absolute_expires_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
 		session.TokenHash, session.UserID, session.DeviceID,
-		session.ExpiresAt.Format(time.RFC3339), session.CreatedAt.Format(time.RFC3339))
+		session.ExpiresAt.Format(time.RFC3339), absoluteExpiresAt.Format(time.RFC3339),
+		session.CreatedAt.Format(time.RFC3339))
 	return err
 }
 
 func (s *SQLiteStore) GetSession(ctx context.Context, tokenHash string) (*Session, error) {
 	var sess Session
-	var expiresAt, createdAt string
+	var expiresAt, absoluteExpiresAt, createdAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT token_hash, user_id, device_id, expires_at, created_at
-		FROM sessions WHERE token_hash = ?`, tokenHash).Scan(
-		&sess.TokenHash, &sess.UserID, &sess.DeviceID, &expiresAt, &createdAt)
+			SELECT token_hash, user_id, device_id, expires_at, absolute_expires_at, created_at
+			FROM sessions WHERE token_hash = ?`, tokenHash).Scan(
+		&sess.TokenHash, &sess.UserID, &sess.DeviceID, &expiresAt, &absoluteExpiresAt, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -382,8 +395,25 @@ func (s *SQLiteStore) GetSession(ctx context.Context, tokenHash string) (*Sessio
 		return nil, err
 	}
 	sess.ExpiresAt, _ = time.Parse(time.RFC3339, expiresAt)
+	sess.AbsoluteExpiresAt, _ = time.Parse(time.RFC3339, absoluteExpiresAt)
 	sess.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	return &sess, nil
+}
+
+func (s *SQLiteStore) UpdateSessionExpiry(ctx context.Context, tokenHash string, expiresAt time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = ? WHERE token_hash = ?`,
+		expiresAt.Format(time.RFC3339), tokenHash)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) DeleteSession(ctx context.Context, tokenHash string) error {
@@ -411,6 +441,55 @@ func (s *SQLiteStore) CreateDevice(ctx context.Context, device *Device) error {
 		return ErrDeviceExists
 	}
 	return err
+}
+
+func (s *SQLiteStore) CreateDeviceAndBindSession(ctx context.Context, device *Device, tokenHash string) (err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin device registration transaction: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		rollbackErr := tx.Rollback()
+		if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, fmt.Errorf("rollback device registration transaction: %w", rollbackErr))
+		}
+	}()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO devices (id, user_id, label, revoked, last_seen_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		device.ID, device.UserID, device.Label, boolToInt(device.Revoked),
+		device.LastSeenAt.Format(time.RFC3339), device.CreatedAt.Format(time.RFC3339))
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return ErrDeviceExists
+		}
+		return fmt.Errorf("create device: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE sessions SET device_id = ?
+		WHERE token_hash = ?
+		  AND device_id = ''
+		  AND user_id = (SELECT user_id FROM devices WHERE id = ? AND revoked = 0)`,
+		device.ID, tokenHash, device.ID)
+	if err != nil {
+		return fmt.Errorf("bind session to device: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read bound session count: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit device registration transaction: %w", err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) GetDevice(ctx context.Context, deviceID string) (*Device, error) {

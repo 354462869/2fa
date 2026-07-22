@@ -58,7 +58,7 @@ docker run --rm -p 8080:8080 \
   -e SERVER_DB_PATH=/data/2fa.sqlite \
   -e SERVER_PUBLIC_ORIGIN=http://127.0.0.1:8080 \
   -e SERVER_ALLOWED_ORIGINS=http://127.0.0.1:8080 \
-  ghcr.io/354462869/2fa-server:v0.2.2
+  ghcr.io/354462869/2fa-server:v0.2.3
 ```
 
 打开 `http://127.0.0.1:8080` 会进入管理后台。首次部署时，如果数据库为空，后台会提示创建第一个管理员账号。生产环境请设置强随机 `SERVER_SESSION_SECRET`；如果通过公网 IP 或域名访问，也要把 `SERVER_PUBLIC_ORIGIN` 和 `SERVER_ALLOWED_ORIGINS` 改成实际访问地址。

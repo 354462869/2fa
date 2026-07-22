@@ -14,14 +14,15 @@ import (
 )
 
 type Config struct {
-	Addr         string
-	Env          string
-	DBPath       string
-	PublicOrigin string
+	Addr           string
+	Env            string
+	DBPath         string
+	PublicOrigin   string
 	AdminAssetsDir string
 
-	SessionSecret string
-	SessionTTL    time.Duration
+	SessionSecret      string
+	SessionTTL         time.Duration
+	SessionMaxLifetime time.Duration
 
 	BootstrapAdminUsername string
 	BootstrapAdminPassword string
@@ -53,6 +54,11 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SERVER_SESSION_TTL: %w", err)
 	}
 	cfg.SessionTTL = ttl
+	maxLifetime, err := time.ParseDuration(getString("SERVER_SESSION_MAX_LIFETIME", "4320h"))
+	if err != nil {
+		return Config{}, fmt.Errorf("SERVER_SESSION_MAX_LIFETIME: %w", err)
+	}
+	cfg.SessionMaxLifetime = maxLifetime
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -69,6 +75,12 @@ func (c Config) Validate() error {
 	}
 	if c.SessionTTL <= 0 {
 		return errors.New("SERVER_SESSION_TTL must be positive")
+	}
+	if c.SessionMaxLifetime <= 0 {
+		return errors.New("SERVER_SESSION_MAX_LIFETIME must be positive")
+	}
+	if c.SessionMaxLifetime < c.SessionTTL {
+		return errors.New("SERVER_SESSION_MAX_LIFETIME must be at least SERVER_SESSION_TTL")
 	}
 	if c.RateLimitAuthPerMin <= 0 || c.RateLimitSyncPerMin <= 0 {
 		return errors.New("rate limits must be positive")

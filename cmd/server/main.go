@@ -36,7 +36,7 @@ func main() {
 	}
 	defer store.Close()
 
-	authSvc := auth.NewService(store, cfg.SessionTTL)
+	authSvc := auth.NewService(store, cfg.SessionTTL, cfg.SessionMaxLifetime)
 	syncSvc := sync.NewService(store)
 
 	if err := bootstrapAdmin(context.Background(), logger, store, authSvc, cfg); err != nil {

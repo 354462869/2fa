@@ -48,6 +48,10 @@ import {
 import { decodeBase32, generateTOTP } from './utils/totp';
 import { runSync } from './utils/sync';
 import { resolveItemTimestamp, formatAge, comparePlaintextItems } from './utils/age';
+import { AccountHoverDetails } from './AccountHoverDetails';
+import { type RemoteConfig, expireRemoteCredentials, restoreRemoteCredentials, buildRemoteReLoginRequest } from './utils/sync-config';
+import { loadRemoteConfig, saveRemoteConfig, removeRemoteConfig } from './utils/remote-config-storage';
+import { RemoteReLoginPanel } from './RemoteReLoginPanel';
 
 interface PlaintextItem {
   id: string;
@@ -355,16 +359,16 @@ interface PlaintextGroup {
   icon?: string;
 }
 
-interface RemoteConfig {
-  baseUrl: string;
-  username: string;
-  token: string;
-  deviceId: string;
-  deviceLabel: string;
-}
-
 function getErrorMessage(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
+  const msg = err instanceof Error && err.message ? err.message : fallback;
+  if (
+    msg.toLowerCase().includes('failed to fetch') ||
+    msg.toLowerCase().includes('fetch') ||
+    msg.toLowerCase().includes('networkerror')
+  ) {
+    return '网络连接失败，请检查服务器地址';
+  }
+  return msg;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -378,15 +382,6 @@ function isVaultEnvelope(value: unknown): value is VaultEnvelope {
     && typeof value.kdf_salt_b64 === 'string'
     && typeof value.wrapped_dek_b64 === 'string'
     && typeof value.wrap_iv_b64 === 'string';
-}
-
-function isRemoteConfig(value: unknown): value is RemoteConfig {
-  return isRecord(value)
-    && typeof value.baseUrl === 'string'
-    && typeof value.username === 'string'
-    && typeof value.token === 'string'
-    && typeof value.deviceId === 'string'
-    && typeof value.deviceLabel === 'string';
 }
 
 function isClipboardImageItem(item: DataTransferItem): boolean {
@@ -497,22 +492,9 @@ export default function App() {
   const [decryptedGroups, setDecryptedGroups] = useState<PlaintextGroup[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [relations, setRelations] = useState<Relation[]>([]);
-  const [isIdle, setIsIdle] = useState(false);
-  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sidebarRef = useRef<HTMLDivElement>(null);
 
   const compareAccountItems = (a: PlaintextItem, b: PlaintextItem): number => {
     return comparePlaintextItems(a, b, getAccountType, accounts, relations);
-  };
-
-  const resetSidebarIdleTimer = () => {
-    setIsIdle(false);
-    if (idleTimerRef.current) {
-      clearTimeout(idleTimerRef.current);
-    }
-    idleTimerRef.current = setTimeout(() => {
-      setIsIdle(true);
-    }, 30000);
   };
 
   const [activeTab, setActiveTab] = useState<'vault' | 'groups' | 'sync' | 'settings'>('vault');
@@ -551,6 +533,7 @@ export default function App() {
   const [remoteLabel, setRemoteLabel] = useState('我的浏览器');
   const [isSyncing, setIsSyncing] = useState(false);
   const [remoteConfig, setRemoteConfig] = useState<RemoteConfig | null>(null);
+  const [reLoginPassword, setReLoginPassword] = useState('');
 
   const [autoLockMinutes, setAutoLockMinutes] = useState(15);
   const [requireSyncPassword, setRequireSyncPassword] = useState(false);
@@ -562,6 +545,15 @@ export default function App() {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const dekRef = useRef<CryptoKey | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const serverInputRef = useRef<HTMLInputElement>(null);
+  const shouldFocusConnectionRef = useRef(false);
+
+  useEffect(() => {
+    if (!remoteConfig && shouldFocusConnectionRef.current) {
+      shouldFocusConnectionRef.current = false;
+      serverInputRef.current?.focus();
+    }
+  }, [remoteConfig]);
   const [selectedFileName, setSelectedFileName] = useState('');
   const [qrPreviewSrc, setQrPreviewSrc] = useState('');
   const [isScanningTab, setIsScanningTab] = useState(false);
@@ -597,7 +589,6 @@ export default function App() {
   const checkExtensionState = async () => {
     const store = await localStore.get([
       'vaultEnvelope',
-      'remoteConfig',
       'autoLockMinutes',
       'requireSyncPasswordEachSession'
     ]);
@@ -605,7 +596,9 @@ export default function App() {
     setHasEnvelope(isVaultEnvelope(store.vaultEnvelope));
     if (typeof store.autoLockMinutes === 'number') setAutoLockMinutes(store.autoLockMinutes);
     if (store.requireSyncPasswordEachSession) setRequireSyncPassword(!!store.requireSyncPasswordEachSession);
-    if (isRemoteConfig(store.remoteConfig)) setRemoteConfig(store.remoteConfig);
+
+    const config = await loadRemoteConfig();
+    if (config) setRemoteConfig(config);
 
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({ type: 'GET_STATE' }, async (response) => {
@@ -626,9 +619,9 @@ export default function App() {
     setIsUnlocked(true);
     await loadAndDecryptVault();
     setIsInitialized(true);
-    const store = await localStore.get(['remoteConfig']);
-    if (isRemoteConfig(store.remoteConfig)) {
-      await syncVault(store.remoteConfig, pw, false);
+    const config = await loadRemoteConfig();
+    if (config) {
+      await syncVault(config, pw, false);
     }
   };
 
@@ -654,6 +647,9 @@ export default function App() {
     showSuccess = true
   ): Promise<boolean> => {
     if (!password || syncInFlightRef.current) return false;
+    if (!config.token) {
+      return false;
+    }
     syncInFlightRef.current = true;
     setIsSyncing(true);
     setErrorMessage(null);
@@ -674,13 +670,36 @@ export default function App() {
       if (showSuccess) setSuccessMessage('保管库同步成功！');
       await reloadDekFromStoredEnvelope(password);
       await loadAndDecryptVault();
+      const updatedConfig = { ...config, syncStatus: 'synced' as const };
+      await saveRemoteConfig(updatedConfig);
+      setRemoteConfig(updatedConfig);
       return true;
     }
 
-    if (res.error === 'decryption.wrong_sync_password') {
-      setErrorMessage('同步密码与远程保管库封装不匹配！');
+    if (res.kind === 'auth_expired') {
+      const updatedConfig = expireRemoteCredentials(config, 'expired');
+      await saveRemoteConfig(updatedConfig);
+      setRemoteConfig(updatedConfig);
+      setErrorMessage('同步服务器登录已过期');
+    } else if (res.kind === 'device_revoked') {
+      const updatedConfig = expireRemoteCredentials(config, 'device_revoked');
+      await saveRemoteConfig(updatedConfig);
+      setRemoteConfig(updatedConfig);
+      setErrorMessage('同步设备已被撤销');
+    } else if (res.kind === 'disabled') {
+      const updatedConfig = { ...config, syncStatus: 'failed' as const };
+      await saveRemoteConfig(updatedConfig);
+      setRemoteConfig(updatedConfig);
+      setErrorMessage('您的账号已被禁用，同步已停止。');
     } else {
-      setErrorMessage(res.error || '同步失败');
+      const updatedConfig = { ...config, syncStatus: 'failed' as const };
+      await saveRemoteConfig(updatedConfig);
+      setRemoteConfig(updatedConfig);
+      if (res.message === 'decryption.wrong_sync_password') {
+        setErrorMessage('同步密码与远程保管库封装不匹配！');
+      } else {
+        setErrorMessage(res.message || '同步失败');
+      }
     }
     return false;
   };
@@ -804,26 +823,6 @@ export default function App() {
       };
     }
   }, [isUnlocked, decryptedItems]);
-
-  useEffect(() => {
-    if (!isUnlocked) {
-      setIsIdle(false);
-      if (idleTimerRef.current) {
-        clearTimeout(idleTimerRef.current);
-        idleTimerRef.current = null;
-      }
-      return;
-    }
-
-    resetSidebarIdleTimer();
-
-    return () => {
-      if (idleTimerRef.current) {
-        clearTimeout(idleTimerRef.current);
-        idleTimerRef.current = null;
-      }
-    };
-  }, [isUnlocked]);
 
   const handleSetupPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1380,21 +1379,91 @@ export default function App() {
         username: remoteUsername,
         token: session.token,
         deviceId,
-        deviceLabel: remoteLabel
+        deviceLabel: remoteLabel,
+        syncStatus: 'pending'
       };
 
-      await localStore.set({ remoteConfig: config });
+      await saveRemoteConfig(config);
       setRemoteConfig(config);
       const synced = await syncVault(config, syncPassword, false);
-      setSuccessMessage(synced ? '成功连接并同步保管库！' : '成功连接到远程同步服务器！');
+      if (synced) {
+        setSuccessMessage('成功连接并同步保管库！');
+      }
 
       setRemoteUsername('');
       setRemotePassword('');
     } catch (err: unknown) {
-      setErrorMessage(getErrorMessage(err, '连接失败'));
+      if (err instanceof Error) {
+        setErrorMessage(getErrorMessage(err, '连接失败'));
+      } else {
+        throw err;
+      }
     } finally {
       setIsSyncing(false);
     }
+  };
+
+  const handleRemoteReLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!remoteConfig) return;
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setIsSyncing(true);
+
+    try {
+      const cleanUrl = remoteConfig.deviceId ? remoteConfig.baseUrl : '';
+      if (!cleanUrl) {
+        setErrorMessage('无效的远程配置');
+        setIsSyncing(false);
+        return;
+      }
+      const api = new ApiClient({ baseUrl: cleanUrl });
+
+      const loginReq = buildRemoteReLoginRequest(remoteConfig, reLoginPassword);
+      const loginRes = await api.auth_.login(loginReq);
+
+      if (!loginRes.ok) {
+        setErrorMessage(loginRes.error.message || '登录失败');
+        setIsSyncing(false);
+        return;
+      }
+
+      const session = loginRes.data;
+      const updatedConfig = {
+        ...restoreRemoteCredentials(remoteConfig, session.token),
+        syncStatus: 'pending' as const
+      };
+
+      await saveRemoteConfig(updatedConfig);
+      setRemoteConfig(updatedConfig);
+      setReLoginPassword('');
+
+      const synced = await syncVault(updatedConfig, syncPassword, false);
+      if (synced) {
+        setSuccessMessage('重新登录并同步成功！');
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setErrorMessage(getErrorMessage(err, '连接失败'));
+      } else {
+        throw err;
+      }
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleDeviceReconnect = async () => {
+    if (!remoteConfig) return;
+    setRemoteServer(remoteConfig.baseUrl);
+    setRemoteUsername(remoteConfig.username);
+    setRemoteLabel(remoteConfig.deviceLabel);
+    await removeRemoteConfig();
+    shouldFocusConnectionRef.current = true;
+    setRemoteConfig(null);
+    setReLoginPassword('');
+    setErrorMessage(null);
+    setSuccessMessage(null);
   };
 
   const handleTriggerSync = async () => {
@@ -1404,7 +1473,8 @@ export default function App() {
 
   const handleDisconnect = async () => {
     if (!confirm('您确定要断开同步连接吗？这不会删除本地的保管库记录。')) return;
-    await localStore.remove(['remoteConfig', 'lastSyncSeq', 'lastSyncTime']);
+    await removeRemoteConfig();
+    await localStore.remove(['lastSyncSeq', 'lastSyncTime']);
     setRemoteConfig(null);
     setSuccessMessage('已断开远程同步。');
   };
@@ -1653,16 +1723,6 @@ export default function App() {
 
   return (
     <div
-      ref={sidebarRef}
-      onMouseMoveCapture={resetSidebarIdleTimer}
-      onMouseEnter={resetSidebarIdleTimer}
-      onMouseOverCapture={resetSidebarIdleTimer}
-      onClickCapture={resetSidebarIdleTimer}
-      onScrollCapture={resetSidebarIdleTimer}
-      onKeyDownCapture={resetSidebarIdleTimer}
-      onFocusCapture={resetSidebarIdleTimer}
-      onTouchStartCapture={resetSidebarIdleTimer}
-      onPointerMoveCapture={resetSidebarIdleTimer}
       className="w-full h-screen min-w-[320px] bg-[#0B0F19] text-slate-100 overflow-hidden flex flex-col font-sans select-none relative"
     >
       {/* Radial Glow */}
@@ -1681,10 +1741,27 @@ export default function App() {
             </span>
             {/* Sync Status Badge */}
             {remoteConfig ? (
-              <span className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full text-[9px] font-medium">
-                <span className="w-1 h-1 bg-emerald-400 rounded-full animate-pulse"></span>
-                已同步
-              </span>
+              remoteConfig.token === '' ? (
+                <span className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full text-[9px] font-medium">
+                  <span className="w-1 h-1 bg-amber-400 rounded-full animate-pulse"></span>
+                  同步已过期
+                </span>
+              ) : remoteConfig.syncStatus === 'pending' ? (
+                <span className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full text-[9px] font-medium">
+                  <span className="w-1 h-1 bg-amber-400 rounded-full animate-pulse"></span>
+                  待同步
+                </span>
+              ) : remoteConfig.syncStatus === 'failed' ? (
+                <span className="flex items-center gap-1 bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded-full text-[9px] font-medium">
+                  <span className="w-1 h-1 bg-rose-400 rounded-full animate-pulse"></span>
+                  同步失败
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full text-[9px] font-medium">
+                  <span className="w-1 h-1 bg-emerald-400 rounded-full animate-pulse"></span>
+                  已同步
+                </span>
+              )
             ) : (
               <span className="flex items-center gap-1 bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full text-[9px] font-medium border border-slate-700/50">
                 本地
@@ -1692,7 +1769,7 @@ export default function App() {
             )}
           </div>
           <div className="flex items-center gap-1">
-            {remoteConfig && (
+            {remoteConfig && remoteConfig.token !== '' && (
               <button
                 onClick={handleTriggerSync}
                 className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800/50 rounded-lg transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500"
@@ -1803,7 +1880,7 @@ export default function App() {
                     <Search className="w-5 h-5" />
                   </div>
                   <p className="text-xs font-semibold text-slate-300">未找到记录</p>
-                  <p className="text-[10px] text-slate-500 mt-1.5 max-w-[200px] leading-relaxed">
+                  <p className="text-[10px] text-slate-500 mt-1.5 max-w-[250px] leading-relaxed">
                     {searchQuery ? '请调整您的搜索词' : '点击加号按钮添加您的第一个身份验证验证码。'}
                   </p>
                 </div>
@@ -1872,9 +1949,14 @@ export default function App() {
                                 const proxyHost = displayProxyHost(info.proxy);
                                 const noteText = info.notes?.trim() || '无备注';
 
-                                  return (
+                                return (
+                                  <AccountHoverDetails
+                                    key={item.id}
+                                    noteText={noteText}
+                                    ageText={formatAge(resolveItemTimestamp(item, accounts, relations))}
+                                  >
                                     <div
-                                      key={item.id}
+                                      data-testid="account-card"
                                       className={`backdrop-blur-sm border rounded-lg p-2.5 flex flex-col gap-2 transition-all duration-150 relative group shadow-sm ${typeStyle.cardClass}`}
                                     >
                                       <div className="flex items-center justify-between gap-2.5 w-full min-w-0">
@@ -1955,122 +2037,116 @@ export default function App() {
                                         </div>
                                       </div>
 
-                                      {isIdle ? (
-                                        <div className="flex items-center justify-between w-full mt-0.5 pt-1.5 border-t border-white/5 text-[10px] text-slate-400 font-medium select-none" onClick={(e) => e.stopPropagation()}>
-                                          <span className="min-w-0 truncate pr-2" title={noteText}>{noteText}</span>
-                                          <span className="shrink-0 font-mono text-cyan-400">{formatAge(resolveItemTimestamp(item, accounts, relations))}</span>
-                                        </div>
-                                      ) : (
-                                        <div className="flex items-center justify-between w-full mt-0.5 pt-1.5 border-t border-white/5" onClick={(e) => e.stopPropagation()}>
-                                          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                                            {proxyHost ? (() => {
-                                              const isProxyCopied = copiedKey === `${item.id}:proxy`;
-                                              return (
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCopy(item.id, proxyHost, 'proxy')}
-                                                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
-                                                    isProxyCopied
-                                                      ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
-                                                      : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
-                                                  }`}
-                                                  title={`代理 IP：${proxyHost}（点击复制）`}
-                                                >
-                                                  <Globe className="w-2.5 h-2.5" />
-                                                  <span className="max-w-[70px] truncate font-mono">
-                                                    {isProxyCopied ? '已复制' : `代理 ${proxyHost}`}
-                                                  </span>
-                                                </button>
-                                              );
-                                            })() : (
-                                              <div
-                                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
-                                                title="代理未配置"
+                                      <div className="flex items-center justify-between w-full mt-0.5 pt-1.5 border-t border-white/5" onClick={(e) => e.stopPropagation()}>
+                                        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                          {proxyHost ? (() => {
+                                            const isProxyCopied = copiedKey === `${item.id}:proxy`;
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCopy(item.id, proxyHost, 'proxy')}
+                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                  isProxyCopied
+                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                }`}
+                                                title={`代理 IP：${proxyHost}（点击复制）`}
                                               >
-                                                <Globe className="w-2.5 h-2.5 text-rose-400" />
-                                                <span>无代理</span>
-                                              </div>
-                                            )}
-
-                                            {info.phone ? (() => {
-                                              const isPhoneCopied = copiedKey === `${item.id}:phone`;
-                                              return (
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCopy(item.id, info.phone || '', 'phone')}
-                                                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
-                                                    isPhoneCopied
-                                                      ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
-                                                      : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
-                                                  }`}
-                                                  title="点击复制手机"
-                                                >
-                                                  <Smartphone className="w-2.5 h-2.5" />
-                                                  <span className="max-w-[55px] truncate font-mono">
-                                                    {isPhoneCopied ? '已复制' : maskPhone(info.phone)}
-                                                  </span>
-                                                </button>
-                                              );
-                                            })() : (
-                                              <div
-                                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
-                                                title="手机号未配置"
-                                              >
-                                                <Smartphone className="w-2.5 h-2.5 text-rose-400" />
-                                                <span>无手机</span>
-                                              </div>
-                                            )}
-
-                                            {info.password ? (() => {
-                                              const isPasswordCopied = copiedKey === `${item.id}:password`;
-                                              return (
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCopy(item.id, info.password || '', 'password')}
-                                                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
-                                                    isPasswordCopied
-                                                      ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
-                                                      : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
-                                                  }`}
-                                                  title="点击复制密码"
-                                                >
-                                                  <Lock className="w-2.5 h-2.5" />
-                                                  <span>{isPasswordCopied ? '已复制' : '密码'}</span>
-                                                </button>
-                                              );
-                                            })() : (
-                                              <div
-                                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
-                                                title="密码未配置"
-                                              >
-                                                <Lock className="w-2.5 h-2.5 text-rose-400" />
-                                                <span>无密码</span>
-                                              </div>
-                                            )}
-                                          </div>
-
-                                          <div className="flex items-center gap-1.5 shrink-0">
-                                            <button
-                                              type="button"
-                                              onClick={() => handleEditItemClick(item)}
-                                              className="inline-flex items-center p-1 text-slate-400 hover:text-cyan-300 bg-slate-950/20 hover:bg-cyan-500/10 border border-white/5 rounded transition-colors focus:outline-none"
-                                              title="编辑"
+                                                <Globe className="w-2.5 h-2.5" />
+                                                <span className="max-w-[70px] truncate font-mono">
+                                                  {isProxyCopied ? '已复制' : `代理 ${proxyHost}`}
+                                                </span>
+                                              </button>
+                                            );
+                                          })() : (
+                                            <div
+                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                              title="代理未配置"
                                             >
-                                              <Edit2 className="w-2.5 h-2.5" />
-                                            </button>
+                                              <Globe className="w-2.5 h-2.5 text-rose-400" />
+                                              <span>无代理</span>
+                                            </div>
+                                          )}
 
-                                            <button
-                                              type="button"
-                                              onClick={() => handleDeleteItem(item.id)}
-                                              className="inline-flex items-center p-1 text-rose-400 hover:text-rose-100 bg-rose-950/20 hover:bg-rose-500/15 border border-rose-400/20 rounded transition-colors focus:outline-none"
-                                              title="删除"
+                                          {info.phone ? (() => {
+                                            const isPhoneCopied = copiedKey === `${item.id}:phone`;
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCopy(item.id, info.phone || '', 'phone')}
+                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                  isPhoneCopied
+                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                }`}
+                                                title="点击复制手机"
+                                              >
+                                                <Smartphone className="w-2.5 h-2.5" />
+                                                <span className="max-w-[55px] truncate font-mono">
+                                                  {isPhoneCopied ? '已复制' : maskPhone(info.phone)}
+                                                </span>
+                                              </button>
+                                            );
+                                          })() : (
+                                            <div
+                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                              title="手机号未配置"
                                             >
-                                              <Trash2 className="w-2.5 h-2.5" />
-                                            </button>
-                                          </div>
+                                              <Smartphone className="w-2.5 h-2.5 text-rose-400" />
+                                              <span>无手机</span>
+                                            </div>
+                                          )}
+
+                                          {info.password ? (() => {
+                                            const isPasswordCopied = copiedKey === `${item.id}:password`;
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCopy(item.id, info.password || '', 'password')}
+                                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] border rounded transition-colors focus:outline-none shrink-0 ${
+                                                  isPasswordCopied
+                                                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/30'
+                                                    : 'bg-slate-950/20 text-slate-300 hover:text-cyan-300 border-white/5'
+                                                }`}
+                                                title="点击复制密码"
+                                              >
+                                                <Lock className="w-2.5 h-2.5" />
+                                                <span>{isPasswordCopied ? '已复制' : '密码'}</span>
+                                              </button>
+                                            );
+                                          })() : (
+                                            <div
+                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] text-rose-400 bg-rose-500/15 border border-rose-500/20 rounded shrink-0 font-mono select-none"
+                                              title="密码未配置"
+                                            >
+                                              <Lock className="w-2.5 h-2.5 text-rose-400" />
+                                              <span>无密码</span>
+                                            </div>
+                                          )}
                                         </div>
-                                      )}
+
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleEditItemClick(item)}
+                                            className="inline-flex items-center p-1 text-slate-400 hover:text-cyan-300 bg-slate-950/20 hover:bg-cyan-500/10 border border-white/5 rounded transition-colors focus:outline-none"
+                                            title="编辑"
+                                          >
+                                            <Edit2 className="w-2.5 h-2.5" />
+                                          </button>
+
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDeleteItem(item.id)}
+                                            className="inline-flex items-center p-1 text-rose-400 hover:text-rose-100 bg-rose-950/20 hover:bg-rose-500/15 border border-rose-400/20 rounded transition-colors focus:outline-none"
+                                            title="删除"
+                                          >
+                                            <Trash2 className="w-2.5 h-2.5" />
+                                          </button>
+                                        </div>
+                                      </div>
                                     </div>
+                                  </AccountHoverDetails>
                                 );
                               })}
                             </div>
@@ -2165,45 +2241,69 @@ export default function App() {
           {activeTab === 'sync' && (
             <div className="p-3 space-y-4">
               {remoteConfig ? (
-                <div className="space-y-3">
-                  <div className="bg-slate-900/40 backdrop-blur-md border border-slate-800/80 rounded-2xl p-4 space-y-3">
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
-                        <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-                        已连接
-                      </span>
+                remoteConfig.token === '' ? (
+                  <RemoteReLoginPanel
+                    config={remoteConfig}
+                    reLoginPassword={reLoginPassword}
+                    onPasswordChange={setReLoginPassword}
+                    isSyncing={isSyncing}
+                    onSubmit={handleRemoteReLogin}
+                    onDisconnect={handleDisconnect}
+                    onReconnect={handleDeviceReconnect}
+                  />
+                ) : (
+                  <div className="space-y-3">
+                    <div className="bg-slate-900/40 backdrop-blur-md border border-slate-800/80 rounded-2xl p-4 space-y-3">
+                      <div className="flex justify-between items-center">
+                        {remoteConfig.syncStatus === 'pending' ? (
+                          <span className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                            <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></span>
+                            待同步
+                          </span>
+                        ) : remoteConfig.syncStatus === 'failed' ? (
+                          <span className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+                            <span className="w-2 h-2 bg-rose-500 rounded-full animate-pulse"></span>
+                            同步失败
+                          </span>
+                        ) : (
+                          <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                            已连接
+                          </span>
+                        )}
                       <button
                         onClick={handleDisconnect}
-                        className="text-[10px] text-rose-400 hover:underline hover:text-rose-300 focus:outline-none"
+                        className="min-h-[44px] min-w-[44px] flex items-center justify-end text-[10px] text-rose-400 hover:underline hover:text-rose-300 focus:outline-none"
                       >
                         断开连接
                       </button>
+                      </div>
+                      <div className="text-[11px] text-slate-400 space-y-1.5">
+                        <div className="flex justify-between">
+                          <span>服务器：</span>
+                          <span className="font-mono truncate max-w-[180px] text-slate-200">{remoteConfig.baseUrl}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>用户名：</span>
+                          <span className="font-mono text-slate-200">{remoteConfig.username}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>设备标签：</span>
+                          <span className="text-slate-200">{remoteConfig.deviceLabel}</span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-[11px] text-slate-400 space-y-1.5">
-                      <div className="flex justify-between">
-                        <span>服务器：</span>
-                        <span className="font-mono truncate max-w-[180px] text-slate-200">{remoteConfig.baseUrl}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>用户名：</span>
-                        <span className="font-mono text-slate-200">{remoteConfig.username}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>设备标签：</span>
-                        <span className="text-slate-200">{remoteConfig.deviceLabel}</span>
-                      </div>
-                    </div>
-                  </div>
 
-                  <button
-                    onClick={handleTriggerSync}
-                    disabled={isSyncing}
-                    className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-cyan-600/50 disabled:to-blue-600/50 text-white font-medium text-xs py-2.5 px-4 rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-lg shadow-cyan-600/20 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                    {isSyncing ? '同步中...' : '立即同步保管库'}
-                  </button>
-                </div>
+                    <button
+                      onClick={handleTriggerSync}
+                      disabled={isSyncing}
+                      className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-cyan-600/50 disabled:to-blue-600/50 text-white font-medium text-xs py-2.5 px-4 rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-lg shadow-cyan-600/20 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                      {isSyncing ? '同步中...' : '立即同步保管库'}
+                    </button>
+                  </div>
+                )
               ) : (
                 <form onSubmit={handleRemoteConnect} className="bg-slate-900/40 backdrop-blur-md border border-slate-800/80 rounded-2xl p-4 space-y-3">
                   <h3 className="text-xs font-semibold text-slate-200">连接到同步服务器</h3>
@@ -2212,6 +2312,7 @@ export default function App() {
                       服务器地址
                     </label>
                     <input
+                      ref={serverInputRef}
                       type="url"
                       placeholder="http://127.0.0.1:8080"
                       value={remoteServer}
@@ -2233,10 +2334,11 @@ export default function App() {
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-slate-400 mb-1">
+                    <label htmlFor="remote-connect-password" className="block text-[10px] font-semibold text-slate-400 mb-1">
                       账户密码
                     </label>
                     <input
+                      id="remote-connect-password"
                       type="password"
                       value={remotePassword}
                       onChange={(e) => setRemotePassword(e.target.value)}
@@ -2353,7 +2455,7 @@ export default function App() {
         <div className="bg-slate-950/80 backdrop-blur-md border-t border-slate-800/85 flex justify-around py-1.5 shrink-0">
           <button
             onClick={() => setActiveTab('vault')}
-            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none ${
+            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
               activeTab === 'vault' ? 'text-cyan-400 bg-cyan-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
             }`}
           >
@@ -2362,7 +2464,7 @@ export default function App() {
           </button>
           <button
             onClick={() => setActiveTab('groups')}
-            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none ${
+            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
               activeTab === 'groups' ? 'text-cyan-400 bg-cyan-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
             }`}
           >
@@ -2371,7 +2473,7 @@ export default function App() {
           </button>
           <button
             onClick={() => setActiveTab('sync')}
-            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none ${
+            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
               activeTab === 'sync' ? 'text-cyan-400 bg-cyan-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
             }`}
           >
@@ -2380,7 +2482,7 @@ export default function App() {
           </button>
           <button
             onClick={() => setActiveTab('settings')}
-            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none ${
+            className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-xl transition-all focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
               activeTab === 'settings' ? 'text-cyan-400 bg-cyan-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
             }`}
           >

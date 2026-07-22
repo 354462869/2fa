@@ -31,17 +31,34 @@ var (
 	ErrUserDisabled       = errors.New("auth: user is disabled")
 	ErrSessionExpired     = errors.New("auth: session expired")
 	ErrSessionInvalid     = errors.New("auth: session invalid")
+	ErrSessionRevoked     = errors.New("auth: session revoked")
 )
 
-type Service struct {
-	store      storage.Store
-	sessionTTL time.Duration
+type Clock interface {
+	Now() time.Time
 }
 
-func NewService(store storage.Store, sessionTTL time.Duration) *Service {
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now().UTC() }
+
+type Service struct {
+	store              storage.Store
+	sessionTTL         time.Duration
+	sessionMaxLifetime time.Duration
+	clock              Clock
+}
+
+func NewService(store storage.Store, sessionTTL, sessionMaxLifetime time.Duration) *Service {
+	return NewServiceWithClock(store, sessionTTL, sessionMaxLifetime, systemClock{})
+}
+
+func NewServiceWithClock(store storage.Store, sessionTTL, sessionMaxLifetime time.Duration, clock Clock) *Service {
 	return &Service{
-		store:      store,
-		sessionTTL: sessionTTL,
+		store:              store,
+		sessionTTL:         sessionTTL,
+		sessionMaxLifetime: sessionMaxLifetime,
+		clock:              clock,
 	}
 }
 
@@ -103,15 +120,20 @@ func (s *Service) CreateSession(ctx context.Context, userID, deviceID string) (s
 		return "", time.Time{}, err
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now().UTC()
 	expiresAt := now.Add(s.sessionTTL)
+	absoluteExpiresAt := now.Add(s.sessionMaxLifetime)
+	if expiresAt.After(absoluteExpiresAt) {
+		expiresAt = absoluteExpiresAt
+	}
 
 	session := &storage.Session{
-		TokenHash: hashToken(token),
-		UserID:    userID,
-		DeviceID:  deviceID,
-		ExpiresAt: expiresAt,
-		CreatedAt: now,
+		TokenHash:         hashToken(token),
+		UserID:            userID,
+		DeviceID:          deviceID,
+		ExpiresAt:         expiresAt,
+		AbsoluteExpiresAt: absoluteExpiresAt,
+		CreatedAt:         now,
 	}
 
 	if err := s.store.CreateSession(ctx, session); err != nil {
@@ -125,19 +147,25 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*storage.U
 	tokenHash := hashToken(token)
 	session, err := s.store.GetSession(ctx, tokenHash)
 	if err != nil {
-		if err == storage.ErrNotFound {
+		if errors.Is(err, storage.ErrNotFound) {
 			return nil, nil, ErrSessionInvalid
 		}
 		return nil, nil, err
 	}
 
-	if time.Now().UTC().After(session.ExpiresAt) {
-		s.store.DeleteSession(ctx, tokenHash)
+	now := s.clock.Now().UTC()
+	if !now.Before(session.ExpiresAt) || !now.Before(session.AbsoluteExpiresAt) {
+		if err := s.store.DeleteSession(ctx, tokenHash); err != nil {
+			return nil, nil, fmt.Errorf("%w: delete expired session: %w", ErrSessionExpired, err)
+		}
 		return nil, nil, ErrSessionExpired
 	}
 
 	user, err := s.store.GetUserByID(ctx, session.UserID)
 	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil, ErrSessionInvalid
+		}
 		return nil, nil, err
 	}
 
@@ -148,15 +176,32 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*storage.U
 	var device *storage.Device
 	if session.DeviceID != "" {
 		device, err = s.store.GetDevice(ctx, session.DeviceID)
-		if err != nil && err != storage.ErrNotFound {
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return nil, nil, err
 		}
-		if device != nil && device.Revoked {
-			s.store.DeleteSession(ctx, tokenHash)
-			return nil, nil, ErrSessionInvalid
+		if errors.Is(err, storage.ErrNotFound) || device.Revoked || device.UserID != session.UserID {
+			if err := s.store.DeleteSession(ctx, tokenHash); err != nil {
+				return nil, nil, fmt.Errorf("%w: delete revoked session: %w", ErrSessionRevoked, err)
+			}
+			return nil, nil, ErrSessionRevoked
 		}
-		if device != nil {
-			s.store.UpdateDeviceLastSeen(ctx, device.ID, time.Now().UTC())
+	}
+
+	if !session.ExpiresAt.After(now.Add(s.sessionTTL / 2)) {
+		renewedExpiry := now.Add(s.sessionTTL)
+		if renewedExpiry.After(session.AbsoluteExpiresAt) {
+			renewedExpiry = session.AbsoluteExpiresAt
+		}
+		if renewedExpiry.After(session.ExpiresAt) {
+			if err := s.store.UpdateSessionExpiry(ctx, tokenHash, renewedExpiry); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+
+	if device != nil {
+		if err := s.store.UpdateDeviceLastSeen(ctx, device.ID, now); err != nil {
+			return nil, nil, err
 		}
 	}
 
@@ -165,6 +210,10 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*storage.U
 
 func (s *Service) DeleteSession(ctx context.Context, token string) error {
 	return s.store.DeleteSession(ctx, hashToken(token))
+}
+
+func (s *Service) CreateDeviceAndBindSession(ctx context.Context, device *storage.Device, token string) error {
+	return s.store.CreateDeviceAndBindSession(ctx, device, hashToken(token))
 }
 
 func hashToken(token string) string {
