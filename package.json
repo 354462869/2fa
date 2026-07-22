@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "./scripts/dev.sh",
     "build": "pnpm -r --if-present run build",
-    "test": "pnpm -r --if-present run test",
+    "test": "pnpm --filter @2fa/api-types build && pnpm --filter @2fa/api-client build && pnpm -r --if-present run test",
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "pnpm -r --if-present run lint",
     "format": "pnpm -r --if-present run format"
